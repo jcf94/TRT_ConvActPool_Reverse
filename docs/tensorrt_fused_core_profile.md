@@ -320,6 +320,8 @@ v18 larger dual-N tiles:               0.045746-0.063636 ms
 v19 ptx_mma_oc32_dual_n_packed_b_4x4:  0.032719 ms
 v20 ptx_mma_oc32_dual_n_packed_ab_4x4: 0.026198 ms
 v21 packed epilogue variant:           0.028079 ms
+v22 accumulator-pooling variant:        0.034310 ms
+v23 simple pool-output owner variant:   0.511420 ms
 ```
 
 Resource and static SASS comparison:
@@ -344,6 +346,12 @@ Interpretation:
   the first custom kernel faster than the DP4A path.
 - v21 tried to pack the pooling epilogue, but the repack phase and additional
   synchronization regressed versus v20.
+- v22 tried to fuse ReLU/MaxPool into accumulator writeback with shared
+  `atomicMax`. It was correct, but atomic contention and extra bookkeeping made
+  it slower than the v20 shared conv-tile epilogue.
+- v23 assigned ownership by pool output to avoid atomics. This was also correct,
+  but the simple mapping used only one of eight MMA N columns and recomputed
+  overlapping conv points for neighboring pool outputs, so it was much slower.
 - The custom kernels still build MMA fragments through byte-level global/shared
   loads, while TensorRT feeds IMMA from a much denser wide-load/register-reuse
   schedule.
@@ -358,5 +366,8 @@ Next useful direction:
   conv tile. A naive repack regressed, so future work should either avoid the
   intermediate conv tile or write it packed directly from the MMA result without
   a separate repack pass.
+- Accumulator-path pooling should avoid atomics. A useful next experiment would
+  batch multiple pool outputs into the MMA N dimension. The simple one-pool-per-
+  warp owner mode is not viable because it wastes most tensor-core lanes.
 - Avoid larger spatial tiles with this shared-B design; v18 showed 5x5, 6x6,
   and 7x7 all regress.

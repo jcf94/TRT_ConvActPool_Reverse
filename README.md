@@ -116,6 +116,8 @@ Latest optimization results:
 | v19 | `ptx_mma_oc32_dual_n_packed_b_4x4 = 0.032719 ms` | packs shared B tile as `int8x4`, reducing byte shared loads; current best PTX MMA |
 | v20 | `ptx_mma_oc32_dual_n_packed_ab_4x4 = 0.026198 ms` | packs both weight A and activation B fragments; current best custom kernel |
 | v21 | `ptx_mma_oc32_dual_n_packed_ab_epilogue = 0.028079 ms` | packed pooling epilogue regressed due to repack and extra sync |
+| v22 | `ptx_mma_oc32_dual_n_accum_pool_4x4 = 0.034310 ms` | accumulator-path ReLU/MaxPool with shared atomics was correct but too slow |
+| v23 | `ptx_mma_oc32_pool_owner_w4_b128 = 0.511420 ms` | pool-output owner without batching wastes 7/8 MMA N columns and is not viable |
 
 The v4 result shows that tensor-core INT8 convolution is necessary to approach
 TensorRT. It also shows why plain GEMM is not enough: materializing the full
@@ -187,6 +189,18 @@ byte global loads from 164 to 4, `PRMT` from 287 to 7, and registers from 56 to
 48. v21 tried to pack the pooling epilogue as `int8x4`, but the required repack
 phase and extra synchronization outweighed the reduced epilogue loads.
 
+v22 tried to fuse ReLU/MaxPool into the accumulator writeback path by updating a
+shared pooled accumulator directly from each computed conv point. The result was
+correct, but the shared-memory `atomicMax` contention and extra bookkeeping
+regressed to `0.034310 ms`. Future pooling fusion should avoid atomics, for
+example by assigning ownership by pool output rather than by conv point.
+
+v23 tested that pool-output owner idea in the simplest form: one warp owns one
+pool output and computes its 3x3 conv window directly. It was correct, but it
+only used one of the eight MMA N columns for useful output and recomputed
+overlapping conv points heavily, so it regressed to `0.511420 ms`. Any viable
+owner-mode design must batch multiple pool outputs into the MMA N dimension.
+
 ## Optimization Plan
 
 The next target is TensorRT's fused layer time, about `0.01 ms` on the current
@@ -238,8 +252,11 @@ Each optimization attempt lives in a separate source file:
 - `src/bench_resnet_stem_v20.cu`: v20 packed A/B PTX MMA kernel, current best
   custom version.
 - `src/bench_resnet_stem_v21.cu`: v21 packed pooling epilogue experiment.
-- Future attempts should use `src/bench_resnet_stem_v22.cu`,
-  `src/bench_resnet_stem_v23.cu`, and so on.
+- `src/bench_resnet_stem_v22.cu`: v22 accumulator-path ReLU/MaxPool experiment
+  using shared atomics.
+- `src/bench_resnet_stem_v23.cu`: v23 simple pool-output owner experiment.
+- Future attempts should use `src/bench_resnet_stem_v24.cu`,
+  `src/bench_resnet_stem_v25.cu`, and so on.
 
 ## Notes
 
