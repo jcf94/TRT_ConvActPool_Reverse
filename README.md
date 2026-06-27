@@ -92,11 +92,21 @@ Latest optimization results:
 | v2 | `fused_tiled_14x14 = 0.081843 ms` | prepacked DP4A weights; currently best custom fused direct kernel |
 | v3 | `fused_tiled_56x56 = 0.108958 ms` | interior fast path was a regression versus v2 |
 | v4 | `cublas_int8_gemm = 0.019873 ms`; `cublas_gemm_relu_pool = 0.039794 ms` | tensor-core upper-bound experiment with prebuilt im2col; not a fused operator |
+| v5 | `fused_tiled_oc4_14x14 = 0.044329 ms` | computes 4 output channels per thread for each conv point; reuses input packing |
+| v6 | `fused_tiled_oc8_8x8 = 0.032353 ms` | computes 8 output channels per thread; best direct-DP4A fused kernel so far |
+| v7 | `fused_tiled_oc16_14x14 = 0.038880 ms` | OC16 increases pressure and regresses versus OC8 |
+| v8 | `fused_tiled_oc8_8x8_b128 = 0.031077 ms` | OC8 with 128 threads per block; current best |
+| v9 | `fused_tiled_oc8_10x10_b128 = 0.035623 ms` | 10x10/12x12 spatial tile sweep did not beat v8 |
 
 The v4 result shows that tensor-core INT8 convolution is necessary to approach
 TensorRT. It also shows why plain GEMM is not enough: materializing the full
 `64x112x112` convolution output and then pooling it costs about another
 `0.02 ms`.
+
+The v5-v9 results show the useful limit of the direct-DP4A path on this
+operator: reusing input packing across output channels is important, but the
+best direct kernel is still about 3x slower than TensorRT's CASK fused core.
+Further large gains require an INT8 MMA/tensor-core schedule.
 
 ## Optimization Plan
 
@@ -120,8 +130,17 @@ Each optimization attempt lives in a separate source file:
   an interior fast path that avoids padding checks.
 - `src/bench_resnet_stem_v4.cu`: v4 tensor-core upper-bound experiment using
   prebuilt im2col plus cuBLAS INT8 GEMM, followed by a ReLU+MaxPool kernel.
-- Future attempts should use `src/bench_resnet_stem_v5.cu`,
-  `src/bench_resnet_stem_v6.cu`, and so on.
+- `src/bench_resnet_stem_v5.cu`: v5 OC4 direct-DP4A fused tile attempt. Each
+  thread computes four output channels for the same spatial conv point to reuse
+  input packing.
+- `src/bench_resnet_stem_v6.cu`: v6 OC8 direct-DP4A fused tile attempt.
+- `src/bench_resnet_stem_v7.cu`: v7 OC16 direct-DP4A fused tile attempt.
+- `src/bench_resnet_stem_v8.cu`: v8 OC8 block-size sweep for 256/128/64
+  threads per block.
+- `src/bench_resnet_stem_v9.cu`: v9 OC8 spatial tile-size sweep for 10x10 and
+  12x12 tiles.
+- Future attempts should use `src/bench_resnet_stem_v10.cu`,
+  `src/bench_resnet_stem_v11.cu`, and so on.
 
 ## Notes
 
