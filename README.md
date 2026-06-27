@@ -104,6 +104,20 @@ Latest optimization results:
 | v7 | `fused_tiled_oc16_14x14 = 0.038880 ms` | OC16 increases pressure and regresses versus OC8 |
 | v8 | `fused_tiled_oc8_8x8_b128 = 0.031077 ms` | OC8 with 128 threads per block; current best |
 | v9 | `fused_tiled_oc8_10x10_b128 = 0.035623 ms` | 10x10/12x12 spatial tile sweep did not beat v8 |
+| v10 | `oc8_smem_input_8x8_b128 = 0.034136 ms` | staging the input tile in shared memory regressed versus v8 |
+| v11 | `fused_tiled_oc8_8x8_b128 = 0.030482 ms` | additional 6x6/7x7/16x16 and block-size sweeps did not beat v8 |
+| v12 | `ptx_mma_oc16_8x8_w8_b256 = 0.055870 ms` | first inline PTX `mma.sync.aligned.m16n8k32` fused kernel; correct but fragment construction dominates |
+| v13 | `ptx_mma_oc32_smem_b_6x6_w8_b256 = 0.049618 ms` | stages activation/im2col B tile in shared memory and reuses it across two OC16 MMA groups |
+| v14 | `ptx_mma_oc32_smem_b_4x4_w4_b128 = 0.043008 ms` | smaller tile improves shared-B staging cost and warp utilization |
+| v15 | `ptx_mma_oc64_smem_b_4x4_w4_b128 = 0.041651 ms` | reuses one B tile across all 64 output channels; best PTX MMA so far |
+| v16 | `ptx_mma_oc64_smem_b_4x4_w4_b128 = 0.044665 ms` | channel-split pooling epilogue regressed versus v15 |
+| v17 | `ptx_mma_oc32_dual_n_4x4_w4_b128 = 0.038609 ms` | each warp computes two N-groups to reduce loop/fragment overhead; current best PTX MMA |
+| v18 | `ptx_mma_oc32_dual_n_4x4_w4_b128 = 0.038691 ms` | dual-N tile sweep; 5x5/6x6/7x7 regressed |
+| v19 | `ptx_mma_oc32_dual_n_packed_b_4x4 = 0.032719 ms` | packs shared B tile as `int8x4`, reducing byte shared loads; current best PTX MMA |
+| v20 | `ptx_mma_oc32_dual_n_packed_ab_4x4 = 0.026198 ms` | packs both weight A and activation B fragments; current best custom kernel |
+| v21 | `ptx_mma_oc32_dual_n_packed_ab_epilogue = 0.028079 ms` | packed pooling epilogue regressed due to repack and extra sync |
+| v22 | `ptx_mma_oc32_dual_n_accum_pool_4x4 = 0.034310 ms` | accumulator-path ReLU/MaxPool with shared atomics was correct but too slow |
+| v23 | `ptx_mma_oc32_pool_owner_w4_b128 = 0.511420 ms` | pool-output owner without batching wastes 7/8 MMA N columns and is not viable |
 
 The v4 result shows that tensor-core INT8 convolution is necessary to approach
 TensorRT. It also shows why plain GEMM is not enough: materializing the full
@@ -114,6 +128,78 @@ The v5-v9 results show the useful limit of the direct-DP4A path on this
 operator: reusing input packing across output channels is important, but the
 best direct kernel is still about 3x slower than TensorRT's CASK fused core.
 Further large gains require an INT8 MMA/tensor-core schedule.
+
+The SASS dump suggests TensorRT is not just using a larger DP4A tile. The fused
+CASK kernel has 128 registers/thread, about 9 KB of shared memory, and a long
+sequence of `IMMA.16816.S8.S8` instructions fed by wide global loads with
+register reuse. The likely implementation is an implicit-GEMM convolution
+mainloop over output channels and spatial positions, using INT8 tensor cores and
+keeping the ReLU/MaxPool epilogue close enough to the accumulator data that the
+full `64x112x112` intermediate is never written. v10 and v11 tested two cheaper
+DP4A hypotheses from that analysis: explicit shared-memory input staging and
+more launch-geometry sweep. Both regressed, so the remaining gap is primarily
+the tensor-core mainloop and hand-scheduled data movement, not a simple cache or
+CTA-shape issue.
+
+v12 starts the tensor-core path with inline PTX
+`mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32`. Each warp computes a
+`16 output-channel x 8 conv-position` tile over `K=160` padded elements, writes
+the ReLUed conv tile to shared memory, and then performs MaxPool. This validates
+the lane/register fragment mapping with `max_abs_err=0`, but it is slower than
+the DP4A kernel because every lane rebuilds A/B MMA fragments directly from
+global/input indexing for each K step. The next optimization should keep this
+PTX MMA instruction path but add staged/reused activation fragments and a less
+expensive epilogue.
+
+v13-v15 confirm that activation-fragment reuse matters: staging the B/im2col
+tile once per CTA and reusing it across OC groups improves the PTX MMA path from
+`0.055870 ms` to `0.041651 ms`. However, it is still slower than the direct DP4A
+kernel. The remaining gap is likely in the mainloop details that TensorRT's CASK
+kernel hand-schedules: register-level fragment construction, fewer shared-memory
+round trips, better instruction interleaving around `IMMA`, and larger spatial
+tiles without exploding epilogue cost. v16 tried to split the pooling epilogue by
+channel to reduce per-thread registers, but the added shared-memory traffic and
+thread scheduling regressed.
+
+The latest SASS/resource comparison is:
+
+| kernel | time | registers | shared | static IMMA | notable load pattern |
+| --- | ---: | ---: | ---: | ---: | --- |
+| TensorRT CASK fused core | `0.010157 ms` | 128 | 9008 B | 240 | wide `LDG.E.128/64`, low byte-load count |
+| v15 OC64 shared-B | `0.041651 ms` | 167 | 18144 B | 20 | many `LDG.E.U8` and `LDS.S8` |
+| v17 OC32 dual-N shared-B | `0.038609 ms` | 56 | 15552 B | 20 | fewer byte loads than v15, but still no wide loads |
+| v20 OC32 dual-N packed A/B | `0.026198 ms` | 48 | 15552 B | 20 | almost all weight byte loads removed |
+
+`ncu` hardware-counter profiling remains blocked by host driver permissions
+(`ERR_NVGPUCTRPERM`), so the actionable profiling signal is SASS/resource usage.
+The biggest remaining gap versus TensorRT is IMMA density and data movement:
+TensorRT emits a much larger straight-line IMMA schedule fed by wide loads, while
+the custom kernels still construct fragments through byte-level shared/global
+loads and short looped MMA blocks.
+
+v19 validates the byte-load diagnosis: packing the shared B tile as `uint32_t`
+so each B fragment word comes from one shared load improves v17 from
+`0.038609 ms` to `0.032719 ms`. SASS still shows many byte global loads for
+input/weight fragment construction, so the next target is packed/vectorized A
+weight loads or packed input staging.
+
+v20 applies the same packing idea to the A/weight operand. This drops the custom
+MMA path below the best DP4A kernel (`0.026198 ms` vs `0.0307 ms`) and cuts SASS
+byte global loads from 164 to 4, `PRMT` from 287 to 7, and registers from 56 to
+48. v21 tried to pack the pooling epilogue as `int8x4`, but the required repack
+phase and extra synchronization outweighed the reduced epilogue loads.
+
+v22 tried to fuse ReLU/MaxPool into the accumulator writeback path by updating a
+shared pooled accumulator directly from each computed conv point. The result was
+correct, but the shared-memory `atomicMax` contention and extra bookkeeping
+regressed to `0.034310 ms`. Future pooling fusion should avoid atomics, for
+example by assigning ownership by pool output rather than by conv point.
+
+v23 tested that pool-output owner idea in the simplest form: one warp owns one
+pool output and computes its 3x3 conv window directly. It was correct, but it
+only used one of the eight MMA N columns for useful output and recomputed
+overlapping conv points heavily, so it regressed to `0.511420 ms`. Any viable
+owner-mode design must batch multiple pool outputs into the MMA N dimension.
 
 ## Optimization Plan
 
@@ -146,8 +232,31 @@ Each optimization attempt lives in a separate source file:
   threads per block.
 - `src/bench_resnet_stem_v9.cu`: v9 OC8 spatial tile-size sweep for 10x10 and
   12x12 tiles.
-- Future attempts should use `src/bench_resnet_stem_v10.cu`,
-  `src/bench_resnet_stem_v11.cu`, and so on.
+- `src/bench_resnet_stem_v10.cu`: v10 shared-memory input staging experiment
+  for the OC8 DP4A fused tile.
+- `src/bench_resnet_stem_v11.cu`: v11 extra OC8 DP4A tile/block sweep.
+- `src/bench_resnet_stem_v12.cu`: v12 first inline PTX INT8 MMA fused kernel
+  using `m16n8k32`.
+- `src/bench_resnet_stem_v13.cu`: v13 OC32 PTX MMA with shared-memory B-tile
+  reuse.
+- `src/bench_resnet_stem_v14.cu`: v14 PTX MMA tile-size sweep for shared-B
+  staging.
+- `src/bench_resnet_stem_v15.cu`: v15 OC64 PTX MMA shared-B reuse, current best
+  OC64 PTX MMA version.
+- `src/bench_resnet_stem_v16.cu`: v16 channel-split pooling epilogue experiment.
+- `src/bench_resnet_stem_v17.cu`: v17 OC32 dual-N PTX MMA shared-B kernel,
+  current best PTX MMA version.
+- `src/bench_resnet_stem_v18.cu`: v18 dual-N tile-size sweep.
+- `src/bench_resnet_stem_v19.cu`: v19 packed shared-B tile for the v17 dual-N
+  MMA kernel.
+- `src/bench_resnet_stem_v20.cu`: v20 packed A/B PTX MMA kernel, current best
+  custom version.
+- `src/bench_resnet_stem_v21.cu`: v21 packed pooling epilogue experiment.
+- `src/bench_resnet_stem_v22.cu`: v22 accumulator-path ReLU/MaxPool experiment
+  using shared atomics.
+- `src/bench_resnet_stem_v23.cu`: v23 simple pool-output owner experiment.
+- Future attempts should use `src/bench_resnet_stem_v24.cu`,
+  `src/bench_resnet_stem_v25.cu`, and so on.
 
 ## Notes
 

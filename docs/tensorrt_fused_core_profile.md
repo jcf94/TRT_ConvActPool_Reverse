@@ -292,3 +292,82 @@ A practical staged target is:
 - v5/v6: get below `0.05 ms`.
 - v7: get into `0.015-0.025 ms`.
 - v8+: close the remaining gap with layout/tile tuning.
+
+## PTX MMA Follow-up: v15-v18
+
+After the remote workspace was reset and rebuilt from the local repository, the
+custom path moved to inline PTX
+`mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32`.
+
+`ncu` was retried on the best custom MMA kernel, but hardware-counter profiling
+is still blocked by the host driver:
+
+```text
+ERR_NVGPUCTRPERM - The user does not have permission to access NVIDIA GPU
+Performance Counters
+```
+
+So the useful comparison is timing plus SASS/resource usage.
+
+Latest timings on the RTX 3080 Ti:
+
+```text
+TensorRT CASK fused core:              0.010157 ms
+v8 DP4A best reference:                0.0304-0.0306 ms
+v15 ptx_mma_oc64_smem_b_4x4_w4_b128:  0.041651 ms
+v17 ptx_mma_oc32_dual_n_4x4_w4_b128:  0.038609 ms
+v18 larger dual-N tiles:               0.045746-0.063636 ms
+v19 ptx_mma_oc32_dual_n_packed_b_4x4:  0.032719 ms
+v20 ptx_mma_oc32_dual_n_packed_ab_4x4: 0.026198 ms
+v21 packed epilogue variant:           0.028079 ms
+v22 accumulator-pooling variant:        0.034310 ms
+v23 simple pool-output owner variant:   0.511420 ms
+```
+
+Resource and static SASS comparison:
+
+| kernel | registers | shared | static IMMA | byte global loads | byte shared loads | wide global loads |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| TensorRT CASK | 128 | 9008 B | 240 | 0 | 0 `LDS.S8` | 12 `LDG.E.128`, 26 `LDG.E.64` |
+| v15 OC64 shared-B | 167 | 18144 B | 20 | 321 `LDG.E.U8` | 616 `LDS.S8` | 0 |
+| v17 OC32 dual-N shared-B | 56 | 15552 B | 20 | 161 `LDG.E.U8` | 368 `LDS.S8` | 0 |
+| v19 OC32 dual-N packed-B | 56 | 15552 B | 20 | 164 `LDG.E.U8` | 288 `LDS.S8` | 0 |
+| v20 OC32 dual-N packed A/B | 48 | 15552 B | 20 | 4 `LDG.E.U8` | 288 `LDS.S8` | 0 |
+
+Interpretation:
+
+- v17 improves over v15 because it avoids the OC64 register explosion while
+  amortizing B-tile construction across two N groups.
+- v19 improves over v17 by storing B as packed `int8x4` words in shared memory,
+  so B fragment construction needs fewer byte-level shared loads and fewer move
+  instructions.
+- v20 packs the A/weight operand as `int8x4` too. This removes almost all
+  weight-side byte global loads, drops register usage from 56 to 48, and becomes
+  the first custom kernel faster than the DP4A path.
+- v21 tried to pack the pooling epilogue, but the repack phase and additional
+  synchronization regressed versus v20.
+- v22 tried to fuse ReLU/MaxPool into accumulator writeback with shared
+  `atomicMax`. It was correct, but atomic contention and extra bookkeeping made
+  it slower than the v20 shared conv-tile epilogue.
+- v23 assigned ownership by pool output to avoid atomics. This was also correct,
+  but the simple mapping used only one of eight MMA N columns and recomputed
+  overlapping conv points for neighboring pool outputs, so it was much slower.
+- The custom kernels still build MMA fragments through byte-level global/shared
+  loads, while TensorRT feeds IMMA from a much denser wide-load/register-reuse
+  schedule.
+- TensorRT's kernel has far more straight-line IMMA instructions in SASS. The
+  custom versions rely on short looped MMA blocks, which leaves more loop and
+  fragment-construction overhead per useful tensor-core operation.
+
+Next useful direction:
+
+- Keep the v20 packed A/B OC32 dual-N structure as the baseline.
+- The next remaining byte-load source is the pooling epilogue over the ReLUed
+  conv tile. A naive repack regressed, so future work should either avoid the
+  intermediate conv tile or write it packed directly from the MMA result without
+  a separate repack pass.
+- Accumulator-path pooling should avoid atomics. A useful next experiment would
+  batch multiple pool outputs into the MMA N dimension. The simple one-pool-per-
+  warp owner mode is not viable because it wastes most tensor-core lanes.
+- Avoid larger spatial tiles with this shared-B design; v18 showed 5x5, 6x6,
+  and 7x7 all regress.
