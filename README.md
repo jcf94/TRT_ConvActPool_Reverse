@@ -97,8 +97,10 @@ Each optimization attempt lives in a separate source file:
 
 - `src/bench_resnet_stem.cu`: baseline implementation.
 - `src/bench_resnet_stem_v2.cu`: v2 attempt with prepacked DP4A weights.
-- Future attempts should use `src/bench_resnet_stem_v3.cu`,
-  `src/bench_resnet_stem_v4.cu`, and so on.
+- `src/bench_resnet_stem_v3.cu`: v3 attempt with prepacked DP4A weights plus
+  an interior fast path that avoids padding checks.
+- Future attempts should use `src/bench_resnet_stem_v4.cu`,
+  `src/bench_resnet_stem_v5.cu`, and so on.
 
 ## Notes
 
