@@ -27,3 +27,10 @@ target_compile_options(bench_resnet_stem_v3 PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
   $<$<COMPILE_LANGUAGE:CXX>:-O3>
 )
+
+add_executable(bench_resnet_stem_v4 src/bench_resnet_stem_v4.cu)
+target_link_libraries(bench_resnet_stem_v4 PRIVATE cublas)
+target_compile_options(bench_resnet_stem_v4 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+)

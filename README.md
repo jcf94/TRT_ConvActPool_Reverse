@@ -79,6 +79,20 @@ baseline, but still far from TensorRT's fused kernel. The gap is expected:
 TensorRT is almost certainly using a more specialized INT8 convolution strategy
 than this direct per-output-point DP4A implementation.
 
+Latest optimization results:
+
+| version | best relevant result | note |
+| --- | ---: | --- |
+| baseline | `fused_tiled_14x14 = 0.123176 ms` | direct DP4A, weights packed inside each output-point calculation |
+| v2 | `fused_tiled_14x14 = 0.081843 ms` | prepacked DP4A weights; currently best custom fused direct kernel |
+| v3 | `fused_tiled_56x56 = 0.108958 ms` | interior fast path was a regression versus v2 |
+| v4 | `cublas_int8_gemm = 0.019873 ms`; `cublas_gemm_relu_pool = 0.039794 ms` | tensor-core upper-bound experiment with prebuilt im2col; not a fused operator |
+
+The v4 result shows that tensor-core INT8 convolution is necessary to approach
+TensorRT. It also shows why plain GEMM is not enough: materializing the full
+`64x112x112` convolution output and then pooling it costs about another
+`0.02 ms`.
+
 ## Optimization Plan
 
 The next target is TensorRT's fused layer time, about `0.01 ms` on the current
@@ -99,8 +113,10 @@ Each optimization attempt lives in a separate source file:
 - `src/bench_resnet_stem_v2.cu`: v2 attempt with prepacked DP4A weights.
 - `src/bench_resnet_stem_v3.cu`: v3 attempt with prepacked DP4A weights plus
   an interior fast path that avoids padding checks.
-- Future attempts should use `src/bench_resnet_stem_v4.cu`,
-  `src/bench_resnet_stem_v5.cu`, and so on.
+- `src/bench_resnet_stem_v4.cu`: v4 tensor-core upper-bound experiment using
+  prebuilt im2col plus cuBLAS INT8 GEMM, followed by a ReLU+MaxPool kernel.
+- Future attempts should use `src/bench_resnet_stem_v5.cu`,
+  `src/bench_resnet_stem_v6.cu`, and so on.
 
 ## Notes
 
