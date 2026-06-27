@@ -113,6 +113,9 @@ Latest optimization results:
 | v16 | `ptx_mma_oc64_smem_b_4x4_w4_b128 = 0.044665 ms` | channel-split pooling epilogue regressed versus v15 |
 | v17 | `ptx_mma_oc32_dual_n_4x4_w4_b128 = 0.038609 ms` | each warp computes two N-groups to reduce loop/fragment overhead; current best PTX MMA |
 | v18 | `ptx_mma_oc32_dual_n_4x4_w4_b128 = 0.038691 ms` | dual-N tile sweep; 5x5/6x6/7x7 regressed |
+| v19 | `ptx_mma_oc32_dual_n_packed_b_4x4 = 0.032719 ms` | packs shared B tile as `int8x4`, reducing byte shared loads; current best PTX MMA |
+| v20 | `ptx_mma_oc32_dual_n_packed_ab_4x4 = 0.026198 ms` | packs both weight A and activation B fragments; current best custom kernel |
+| v21 | `ptx_mma_oc32_dual_n_packed_ab_epilogue = 0.028079 ms` | packed pooling epilogue regressed due to repack and extra sync |
 
 The v4 result shows that tensor-core INT8 convolution is necessary to approach
 TensorRT. It also shows why plain GEMM is not enough: materializing the full
@@ -163,6 +166,7 @@ The latest SASS/resource comparison is:
 | TensorRT CASK fused core | `0.010157 ms` | 128 | 9008 B | 240 | wide `LDG.E.128/64`, low byte-load count |
 | v15 OC64 shared-B | `0.041651 ms` | 167 | 18144 B | 20 | many `LDG.E.U8` and `LDS.S8` |
 | v17 OC32 dual-N shared-B | `0.038609 ms` | 56 | 15552 B | 20 | fewer byte loads than v15, but still no wide loads |
+| v20 OC32 dual-N packed A/B | `0.026198 ms` | 48 | 15552 B | 20 | almost all weight byte loads removed |
 
 `ncu` hardware-counter profiling remains blocked by host driver permissions
 (`ERR_NVGPUCTRPERM`), so the actionable profiling signal is SASS/resource usage.
@@ -170,6 +174,18 @@ The biggest remaining gap versus TensorRT is IMMA density and data movement:
 TensorRT emits a much larger straight-line IMMA schedule fed by wide loads, while
 the custom kernels still construct fragments through byte-level shared/global
 loads and short looped MMA blocks.
+
+v19 validates the byte-load diagnosis: packing the shared B tile as `uint32_t`
+so each B fragment word comes from one shared load improves v17 from
+`0.038609 ms` to `0.032719 ms`. SASS still shows many byte global loads for
+input/weight fragment construction, so the next target is packed/vectorized A
+weight loads or packed input staging.
+
+v20 applies the same packing idea to the A/weight operand. This drops the custom
+MMA path below the best DP4A kernel (`0.026198 ms` vs `0.0307 ms`) and cuts SASS
+byte global loads from 164 to 4, `PRMT` from 287 to 7, and registers from 56 to
+48. v21 tried to pack the pooling epilogue as `int8x4`, but the required repack
+phase and extra synchronization outweighed the reduced epilogue loads.
 
 ## Optimization Plan
 
@@ -217,8 +233,13 @@ Each optimization attempt lives in a separate source file:
 - `src/bench_resnet_stem_v17.cu`: v17 OC32 dual-N PTX MMA shared-B kernel,
   current best PTX MMA version.
 - `src/bench_resnet_stem_v18.cu`: v18 dual-N tile-size sweep.
-- Future attempts should use `src/bench_resnet_stem_v19.cu`,
-  `src/bench_resnet_stem_v20.cu`, and so on.
+- `src/bench_resnet_stem_v19.cu`: v19 packed shared-B tile for the v17 dual-N
+  MMA kernel.
+- `src/bench_resnet_stem_v20.cu`: v20 packed A/B PTX MMA kernel, current best
+  custom version.
+- `src/bench_resnet_stem_v21.cu`: v21 packed pooling epilogue experiment.
+- Future attempts should use `src/bench_resnet_stem_v22.cu`,
+  `src/bench_resnet_stem_v23.cu`, and so on.
 
 ## Notes
 

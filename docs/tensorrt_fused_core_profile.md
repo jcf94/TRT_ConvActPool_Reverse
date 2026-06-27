@@ -317,6 +317,9 @@ v8 DP4A best reference:                0.0304-0.0306 ms
 v15 ptx_mma_oc64_smem_b_4x4_w4_b128:  0.041651 ms
 v17 ptx_mma_oc32_dual_n_4x4_w4_b128:  0.038609 ms
 v18 larger dual-N tiles:               0.045746-0.063636 ms
+v19 ptx_mma_oc32_dual_n_packed_b_4x4:  0.032719 ms
+v20 ptx_mma_oc32_dual_n_packed_ab_4x4: 0.026198 ms
+v21 packed epilogue variant:           0.028079 ms
 ```
 
 Resource and static SASS comparison:
@@ -326,11 +329,21 @@ Resource and static SASS comparison:
 | TensorRT CASK | 128 | 9008 B | 240 | 0 | 0 `LDS.S8` | 12 `LDG.E.128`, 26 `LDG.E.64` |
 | v15 OC64 shared-B | 167 | 18144 B | 20 | 321 `LDG.E.U8` | 616 `LDS.S8` | 0 |
 | v17 OC32 dual-N shared-B | 56 | 15552 B | 20 | 161 `LDG.E.U8` | 368 `LDS.S8` | 0 |
+| v19 OC32 dual-N packed-B | 56 | 15552 B | 20 | 164 `LDG.E.U8` | 288 `LDS.S8` | 0 |
+| v20 OC32 dual-N packed A/B | 48 | 15552 B | 20 | 4 `LDG.E.U8` | 288 `LDS.S8` | 0 |
 
 Interpretation:
 
 - v17 improves over v15 because it avoids the OC64 register explosion while
   amortizing B-tile construction across two N groups.
+- v19 improves over v17 by storing B as packed `int8x4` words in shared memory,
+  so B fragment construction needs fewer byte-level shared loads and fewer move
+  instructions.
+- v20 packs the A/weight operand as `int8x4` too. This removes almost all
+  weight-side byte global loads, drops register usage from 56 to 48, and becomes
+  the first custom kernel faster than the DP4A path.
+- v21 tried to pack the pooling epilogue, but the repack phase and additional
+  synchronization regressed versus v20.
 - The custom kernels still build MMA fragments through byte-level global/shared
   loads, while TensorRT feeds IMMA from a much denser wide-load/register-reuse
   schedule.
@@ -340,9 +353,10 @@ Interpretation:
 
 Next useful direction:
 
-- Move from shared-memory byte B tiles to packed/vectorized fragment
-  construction, ideally using `LDG.E.128`/`LDS.128`-like access patterns.
-- Keep the v17 OC32 dual-N structure as the baseline because it has much lower
-  register pressure than v15.
+- Keep the v20 packed A/B OC32 dual-N structure as the baseline.
+- The next remaining byte-load source is the pooling epilogue over the ReLUed
+  conv tile. A naive repack regressed, so future work should either avoid the
+  intermediate conv tile or write it packed directly from the MMA result without
+  a separate repack pass.
 - Avoid larger spatial tiles with this shared-B design; v18 showed 5x5, 6x6,
   and 7x7 all regress.
