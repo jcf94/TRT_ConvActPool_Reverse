@@ -50,6 +50,11 @@ Conclusion: the reproduction matches the article's behavior. The plain graph is
 compiled into one fused TensorRT layer, while the Q/DQ graph is split and is
 roughly 2x slower at the engine level.
 
+See [TensorRT Fused Core Profile Notes](docs/tensorrt_fused_core_profile.md) for
+the detailed profiling record. ncu was installed and attempted, but hardware
+counter collection is blocked in the current container by host driver setting
+`RmProfilingAdminOnly=1` and missing `CAP_SYS_ADMIN`.
+
 ## CUDA Baseline
 
 The custom CUDA benchmark currently includes:

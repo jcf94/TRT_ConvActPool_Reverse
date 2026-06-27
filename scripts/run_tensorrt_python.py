@@ -122,7 +122,7 @@ def force_int8_layers(network):
             pass
 
 
-def build_engine(onnx_path, int8, explicit_qdq):
+def build_engine(onnx_path, int8, explicit_qdq, save_engine=None):
     ck(cuda.cuInit(0))
     dev = ck(cuda.cuDeviceGet(0))
     build_ctx = create_context(dev)
@@ -138,6 +138,10 @@ def build_engine(onnx_path, int8, explicit_qdq):
         raise RuntimeError(f"failed to parse {onnx_path}")
     config = builder.create_builder_config()
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)
+    try:
+        config.profiling_verbosity = trt.ProfilingVerbosity.DETAILED
+    except Exception:
+        pass
     if int8:
         config.set_flag(trt.BuilderFlag.INT8)
         if explicit_qdq:
@@ -156,9 +160,25 @@ def build_engine(onnx_path, int8, explicit_qdq):
     if serialized is None:
         ck(cuda.cuCtxDestroy(build_ctx))
         raise RuntimeError("TensorRT build failed")
+    if save_engine:
+        Path(save_engine).parent.mkdir(parents=True, exist_ok=True)
+        Path(save_engine).write_bytes(bytes(serialized))
     runtime = trt.Runtime(logger)
     engine = runtime.deserialize_cuda_engine(serialized)
     return engine, build_ctx
+
+
+def load_engine(engine_path):
+    ck(cuda.cuInit(0))
+    dev = ck(cuda.cuDeviceGet(0))
+    ctx = create_context(dev)
+    logger = trt.Logger(trt.Logger.INFO)
+    runtime = trt.Runtime(logger)
+    engine = runtime.deserialize_cuda_engine(Path(engine_path).read_bytes())
+    if engine is None:
+        ck(cuda.cuCtxDestroy(ctx))
+        raise RuntimeError(f"failed to load engine: {engine_path}")
+    return engine, ctx
 
 
 def tensor_shape(context, engine, name):
@@ -216,17 +236,25 @@ def run_engine(engine, warmup, iters, ctx):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--onnx", required=True)
+    ap.add_argument("--onnx")
     ap.add_argument("--int8", action="store_true")
     ap.add_argument("--explicit-qdq", action="store_true")
+    ap.add_argument("--save-engine")
+    ap.add_argument("--load-engine")
     ap.add_argument("--warmup", type=int, default=100)
     ap.add_argument("--iters", type=int, default=1000)
     args = ap.parse_args()
+    if not args.load_engine and not args.onnx:
+        ap.error("--onnx is required unless --load-engine is used")
 
     libs = Path(trt.__file__).resolve().parent.parent / "tensorrt_libs"
     os.environ["LD_LIBRARY_PATH"] = f"{libs}:{os.environ.get('LD_LIBRARY_PATH', '')}"
 
-    engine, ctx = build_engine(args.onnx, args.int8, args.explicit_qdq)
+    if args.load_engine:
+        engine, ctx = load_engine(args.load_engine)
+    else:
+        engine, ctx = build_engine(args.onnx, args.int8, args.explicit_qdq,
+                                   args.save_engine)
     total_ms, records = run_engine(engine, args.warmup, args.iters, ctx)
     print(f"engine_mean_ms,{total_ms:.6f}")
     print("layer,mean_ms,count")
