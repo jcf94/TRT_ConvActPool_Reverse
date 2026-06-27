@@ -104,6 +104,13 @@ Latest optimization results:
 | v7 | `fused_tiled_oc16_14x14 = 0.038880 ms` | OC16 increases pressure and regresses versus OC8 |
 | v8 | `fused_tiled_oc8_8x8_b128 = 0.031077 ms` | OC8 with 128 threads per block; current best |
 | v9 | `fused_tiled_oc8_10x10_b128 = 0.035623 ms` | 10x10/12x12 spatial tile sweep did not beat v8 |
+| v10 | `oc8_smem_input_8x8_b128 = 0.034136 ms` | staging the input tile in shared memory regressed versus v8 |
+| v11 | `fused_tiled_oc8_8x8_b128 = 0.030482 ms` | additional 6x6/7x7/16x16 and block-size sweeps did not beat v8 |
+| v12 | `ptx_mma_oc16_8x8_w8_b256 = 0.055870 ms` | first inline PTX `mma.sync.aligned.m16n8k32` fused kernel; correct but fragment construction dominates |
+| v13 | `ptx_mma_oc32_smem_b_6x6_w8_b256 = 0.049618 ms` | stages activation/im2col B tile in shared memory and reuses it across two OC16 MMA groups |
+| v14 | `ptx_mma_oc32_smem_b_4x4_w4_b128 = 0.043008 ms` | smaller tile improves shared-B staging cost and warp utilization |
+| v15 | `ptx_mma_oc64_smem_b_4x4_w4_b128 = 0.041651 ms` | reuses one B tile across all 64 output channels; best PTX MMA so far |
+| v16 | `ptx_mma_oc64_smem_b_4x4_w4_b128 = 0.044665 ms` | channel-split pooling epilogue regressed versus v15 |
 
 The v4 result shows that tensor-core INT8 convolution is necessary to approach
 TensorRT. It also shows why plain GEMM is not enough: materializing the full
@@ -114,6 +121,38 @@ The v5-v9 results show the useful limit of the direct-DP4A path on this
 operator: reusing input packing across output channels is important, but the
 best direct kernel is still about 3x slower than TensorRT's CASK fused core.
 Further large gains require an INT8 MMA/tensor-core schedule.
+
+The SASS dump suggests TensorRT is not just using a larger DP4A tile. The fused
+CASK kernel has 128 registers/thread, about 9 KB of shared memory, and a long
+sequence of `IMMA.16816.S8.S8` instructions fed by wide global loads with
+register reuse. The likely implementation is an implicit-GEMM convolution
+mainloop over output channels and spatial positions, using INT8 tensor cores and
+keeping the ReLU/MaxPool epilogue close enough to the accumulator data that the
+full `64x112x112` intermediate is never written. v10 and v11 tested two cheaper
+DP4A hypotheses from that analysis: explicit shared-memory input staging and
+more launch-geometry sweep. Both regressed, so the remaining gap is primarily
+the tensor-core mainloop and hand-scheduled data movement, not a simple cache or
+CTA-shape issue.
+
+v12 starts the tensor-core path with inline PTX
+`mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32`. Each warp computes a
+`16 output-channel x 8 conv-position` tile over `K=160` padded elements, writes
+the ReLUed conv tile to shared memory, and then performs MaxPool. This validates
+the lane/register fragment mapping with `max_abs_err=0`, but it is slower than
+the DP4A kernel because every lane rebuilds A/B MMA fragments directly from
+global/input indexing for each K step. The next optimization should keep this
+PTX MMA instruction path but add staged/reused activation fragments and a less
+expensive epilogue.
+
+v13-v15 confirm that activation-fragment reuse matters: staging the B/im2col
+tile once per CTA and reusing it across OC groups improves the PTX MMA path from
+`0.055870 ms` to `0.041651 ms`. However, it is still slower than the direct DP4A
+kernel. The remaining gap is likely in the mainloop details that TensorRT's CASK
+kernel hand-schedules: register-level fragment construction, fewer shared-memory
+round trips, better instruction interleaving around `IMMA`, and larger spatial
+tiles without exploding epilogue cost. v16 tried to split the pooling epilogue by
+channel to reduce per-thread registers, but the added shared-memory traffic and
+thread scheduling regressed.
 
 ## Optimization Plan
 
@@ -146,8 +185,20 @@ Each optimization attempt lives in a separate source file:
   threads per block.
 - `src/bench_resnet_stem_v9.cu`: v9 OC8 spatial tile-size sweep for 10x10 and
   12x12 tiles.
-- Future attempts should use `src/bench_resnet_stem_v10.cu`,
-  `src/bench_resnet_stem_v11.cu`, and so on.
+- `src/bench_resnet_stem_v10.cu`: v10 shared-memory input staging experiment
+  for the OC8 DP4A fused tile.
+- `src/bench_resnet_stem_v11.cu`: v11 extra OC8 DP4A tile/block sweep.
+- `src/bench_resnet_stem_v12.cu`: v12 first inline PTX INT8 MMA fused kernel
+  using `m16n8k32`.
+- `src/bench_resnet_stem_v13.cu`: v13 OC32 PTX MMA with shared-memory B-tile
+  reuse.
+- `src/bench_resnet_stem_v14.cu`: v14 PTX MMA tile-size sweep for shared-B
+  staging.
+- `src/bench_resnet_stem_v15.cu`: v15 OC64 PTX MMA shared-B reuse, current best
+  PTX MMA version.
+- `src/bench_resnet_stem_v16.cu`: v16 channel-split pooling epilogue experiment.
+- Future attempts should use `src/bench_resnet_stem_v17.cu`,
+  `src/bench_resnet_stem_v18.cu`, and so on.
 
 ## Notes
 
