@@ -112,3 +112,9 @@ target_compile_options(bench_resnet_stem_v17 PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
   $<$<COMPILE_LANGUAGE:CXX>:-O3>
 )
+
+add_executable(bench_resnet_stem_v18 src/bench_resnet_stem_v18.cu)
+target_compile_options(bench_resnet_stem_v18 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+)

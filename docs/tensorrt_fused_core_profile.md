@@ -292,3 +292,57 @@ A practical staged target is:
 - v5/v6: get below `0.05 ms`.
 - v7: get into `0.015-0.025 ms`.
 - v8+: close the remaining gap with layout/tile tuning.
+
+## PTX MMA Follow-up: v15-v18
+
+After the remote workspace was reset and rebuilt from the local repository, the
+custom path moved to inline PTX
+`mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32`.
+
+`ncu` was retried on the best custom MMA kernel, but hardware-counter profiling
+is still blocked by the host driver:
+
+```text
+ERR_NVGPUCTRPERM - The user does not have permission to access NVIDIA GPU
+Performance Counters
+```
+
+So the useful comparison is timing plus SASS/resource usage.
+
+Latest timings on the RTX 3080 Ti:
+
+```text
+TensorRT CASK fused core:              0.010157 ms
+v8 DP4A best reference:                0.0304-0.0306 ms
+v15 ptx_mma_oc64_smem_b_4x4_w4_b128:  0.041651 ms
+v17 ptx_mma_oc32_dual_n_4x4_w4_b128:  0.038609 ms
+v18 larger dual-N tiles:               0.045746-0.063636 ms
+```
+
+Resource and static SASS comparison:
+
+| kernel | registers | shared | static IMMA | byte global loads | byte shared loads | wide global loads |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| TensorRT CASK | 128 | 9008 B | 240 | 0 | 0 `LDS.S8` | 12 `LDG.E.128`, 26 `LDG.E.64` |
+| v15 OC64 shared-B | 167 | 18144 B | 20 | 321 `LDG.E.U8` | 616 `LDS.S8` | 0 |
+| v17 OC32 dual-N shared-B | 56 | 15552 B | 20 | 161 `LDG.E.U8` | 368 `LDS.S8` | 0 |
+
+Interpretation:
+
+- v17 improves over v15 because it avoids the OC64 register explosion while
+  amortizing B-tile construction across two N groups.
+- The custom kernels still build MMA fragments through byte-level global/shared
+  loads, while TensorRT feeds IMMA from a much denser wide-load/register-reuse
+  schedule.
+- TensorRT's kernel has far more straight-line IMMA instructions in SASS. The
+  custom versions rely on short looped MMA blocks, which leaves more loop and
+  fragment-construction overhead per useful tensor-core operation.
+
+Next useful direction:
+
+- Move from shared-memory byte B tiles to packed/vectorized fragment
+  construction, ideally using `LDG.E.128`/`LDS.128`-like access patterns.
+- Keep the v17 OC32 dual-N structure as the baseline because it has much lower
+  register pressure than v15.
+- Avoid larger spatial tiles with this shared-B design; v18 showed 5x5, 6x6,
+  and 7x7 all regress.

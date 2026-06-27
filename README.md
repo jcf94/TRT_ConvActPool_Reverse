@@ -111,6 +111,8 @@ Latest optimization results:
 | v14 | `ptx_mma_oc32_smem_b_4x4_w4_b128 = 0.043008 ms` | smaller tile improves shared-B staging cost and warp utilization |
 | v15 | `ptx_mma_oc64_smem_b_4x4_w4_b128 = 0.041651 ms` | reuses one B tile across all 64 output channels; best PTX MMA so far |
 | v16 | `ptx_mma_oc64_smem_b_4x4_w4_b128 = 0.044665 ms` | channel-split pooling epilogue regressed versus v15 |
+| v17 | `ptx_mma_oc32_dual_n_4x4_w4_b128 = 0.038609 ms` | each warp computes two N-groups to reduce loop/fragment overhead; current best PTX MMA |
+| v18 | `ptx_mma_oc32_dual_n_4x4_w4_b128 = 0.038691 ms` | dual-N tile sweep; 5x5/6x6/7x7 regressed |
 
 The v4 result shows that tensor-core INT8 convolution is necessary to approach
 TensorRT. It also shows why plain GEMM is not enough: materializing the full
@@ -154,6 +156,21 @@ tiles without exploding epilogue cost. v16 tried to split the pooling epilogue b
 channel to reduce per-thread registers, but the added shared-memory traffic and
 thread scheduling regressed.
 
+The latest SASS/resource comparison is:
+
+| kernel | time | registers | shared | static IMMA | notable load pattern |
+| --- | ---: | ---: | ---: | ---: | --- |
+| TensorRT CASK fused core | `0.010157 ms` | 128 | 9008 B | 240 | wide `LDG.E.128/64`, low byte-load count |
+| v15 OC64 shared-B | `0.041651 ms` | 167 | 18144 B | 20 | many `LDG.E.U8` and `LDS.S8` |
+| v17 OC32 dual-N shared-B | `0.038609 ms` | 56 | 15552 B | 20 | fewer byte loads than v15, but still no wide loads |
+
+`ncu` hardware-counter profiling remains blocked by host driver permissions
+(`ERR_NVGPUCTRPERM`), so the actionable profiling signal is SASS/resource usage.
+The biggest remaining gap versus TensorRT is IMMA density and data movement:
+TensorRT emits a much larger straight-line IMMA schedule fed by wide loads, while
+the custom kernels still construct fragments through byte-level shared/global
+loads and short looped MMA blocks.
+
 ## Optimization Plan
 
 The next target is TensorRT's fused layer time, about `0.01 ms` on the current
@@ -195,10 +212,13 @@ Each optimization attempt lives in a separate source file:
 - `src/bench_resnet_stem_v14.cu`: v14 PTX MMA tile-size sweep for shared-B
   staging.
 - `src/bench_resnet_stem_v15.cu`: v15 OC64 PTX MMA shared-B reuse, current best
-  PTX MMA version.
+  OC64 PTX MMA version.
 - `src/bench_resnet_stem_v16.cu`: v16 channel-split pooling epilogue experiment.
-- Future attempts should use `src/bench_resnet_stem_v17.cu`,
-  `src/bench_resnet_stem_v18.cu`, and so on.
+- `src/bench_resnet_stem_v17.cu`: v17 OC32 dual-N PTX MMA shared-B kernel,
+  current best PTX MMA version.
+- `src/bench_resnet_stem_v18.cu`: v18 dual-N tile-size sweep.
+- Future attempts should use `src/bench_resnet_stem_v19.cu`,
+  `src/bench_resnet_stem_v20.cu`, and so on.
 
 ## Notes
 
