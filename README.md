@@ -93,6 +93,13 @@ machine. The planned sequence is:
 4. Move beyond scalar DP4A if needed: use an implicit-GEMM or tensor-core INT8
    strategy, then fuse ReLU and pooling around that schedule.
 
+Each optimization attempt lives in a separate source file:
+
+- `src/bench_resnet_stem.cu`: baseline implementation.
+- `src/bench_resnet_stem_v2.cu`: v2 attempt with prepacked DP4A weights.
+- Future attempts should use `src/bench_resnet_stem_v3.cu`,
+  `src/bench_resnet_stem_v4.cu`, and so on.
+
 ## Notes
 
 - The remote machine has an RTX 3080 Ti, so the default CUDA architecture is
