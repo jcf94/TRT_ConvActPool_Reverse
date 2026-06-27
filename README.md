@@ -55,6 +55,13 @@ the detailed profiling record. ncu was installed and attempted, but hardware
 counter collection is blocked in the current container by host driver setting
 `RmProfilingAdminOnly=1` and missing `CAP_SYS_ADMIN`.
 
+The TensorRT engine was also inspected at the SASS level by extracting the
+embedded fatbin from the serialized engine. The fused core cubin contains
+`sm80_trt_conv_act_pool_v3_tile_rows_8_tile_cols_120_execute_kernel_trt`, uses
+`IMMA.16816.S8.S8` INT8 tensor-core instructions, and has no `DP4A`
+instructions. This confirms that matching TensorRT's core requires an INT8 MMA
+schedule, not just further scalar-DP4A tuning.
+
 ## CUDA Baseline
 
 The custom CUDA benchmark currently includes:
@@ -149,6 +156,8 @@ Each optimization attempt lives in a separate source file:
 - `nvcc` is under `/usr/local/cuda-11.8/bin`.
 - TensorRT was not preinstalled at the start of this run. The remote now has
   `tensorrt-cu11==10.10.0.31` installed via pip.
+- SASS extraction is reproducible with `scripts/extract_engine_fatbin.py`
+  followed by `cuobjdump -sass -arch sm_86` on the extracted fatbin.
 - The first fused kernel is a correctness baseline: it avoids writing the
   intermediate `64x112x112` tensor, but recomputes overlapping convolution
   points across adjacent pool windows. Use it as a starting point for tiled

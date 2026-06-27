@@ -99,6 +99,107 @@ Important interpretation:
 - It avoids materializing the `64x112x112` post-conv/post-ReLU tensor in global
   memory.
 
+## SASS Extraction
+
+Direct `LD_PRELOAD` interception of `cuModuleLoad*`, `cuLibraryLoad*`, and
+`cuLaunchKernel` did not catch TensorRT's internal module path for this engine.
+`strace` also did not show an external cubin cache file. The useful path was to
+inspect the serialized TensorRT engine itself.
+
+The detailed engine contains an embedded CUDA fatbin:
+
+```text
+engine: results/resnet_stem_plain_int8_detailed.engine
+fatbin magic: 0xBA55ED50
+fatbin offset: 2160
+embedded cubins: sm_80, sm_86, sm_89, sm_90
+```
+
+Reproduction commands:
+
+```bash
+python3 scripts/extract_engine_fatbin.py \
+  results/resnet_stem_plain_int8_detailed.engine \
+  -o results/engine_elf/engine_fatbin.bin
+
+/usr/local/cuda-11.8/bin/cuobjdump -lelf \
+  results/engine_elf/engine_fatbin.bin
+
+/usr/local/cuda-11.8/bin/cuobjdump -sass -arch sm_86 \
+  results/engine_elf/engine_fatbin.bin \
+  > results/trt_conv_act_pool_sm86.sass
+
+/usr/local/cuda-11.8/bin/cuobjdump -res-usage -arch sm_86 \
+  results/engine_elf/engine_fatbin.bin \
+  > results/trt_conv_act_pool_sm86_res_usage.txt
+```
+
+`cuobjdump` prints `Invalid fatbin header` after dumping because the extracted
+blob includes trailing TensorRT engine bytes. The SASS and resource output
+before that message are still useful.
+
+The sm_86 cubin exposes this kernel:
+
+```text
+sm80_trt_conv_act_pool_v3_tile_rows_8_tile_cols_120_execute_kernel_trt
+```
+
+Resource usage:
+
+```text
+REG: 128
+SHARED: 9008 bytes
+LOCAL: 0
+STACK: 0
+CONSTANT[0]: 424 bytes
+```
+
+Important instruction counts from the SASS:
+
+| instruction family | count |
+| --- | ---: |
+| `IMMA.16816.S8.S8` | 240 |
+| `DP4A` | 0 |
+| `HMMA` | 0 |
+| `F2IP.S8.F32.NTZ.RELU` | 40 |
+| `FFMA.FTZ` | 80 |
+| `I2FP.F32.S32` | 80 |
+| `LDG*` | 56 |
+| `LDS*` | 50 |
+| `STS*` | 20 |
+| `BAR*` | 3 |
+
+Representative snippets:
+
+```sass
+IMMA.16816.S8.S8 R56, R88.reuse.ROW, R28.COL, RZ
+F2IP.S8.F32.NTZ.RELU ...
+STG.E.64 ...
+```
+
+Interpretation:
+
+- TensorRT's core is an Ampere INT8 tensor-core kernel. The decisive instruction
+  is `IMMA.16816.S8.S8`; there is no DP4A path in this CASK kernel.
+- The tactic name includes `tile_rows_8_tile_cols_120`, so its internal work
+  tile is much wider than the current custom DP4A kernels and is arranged for
+  MMA fragment reuse.
+- The kernel uses shared-memory staging (`9008` bytes static shared memory,
+  `LDS`/`STS`, and a small number of barriers), but no `LDSM` instructions were
+  observed in this cubin.
+- `F2IP.S8.F32.NTZ.RELU` in the epilogue shows the conversion back to int8 with
+  ReLU folded into the conversion path. Together with the `CaskConvActPool`
+  layer metadata and the absence of full-size intermediate stores, this supports
+  the main hypothesis: TensorRT computes the conv/activation values needed by
+  the pool tile and writes only the final pooled `64x56x56` output.
+- Only a small number of global stores appear near the tail of the kernel,
+  consistent with direct final-output stores instead of materializing
+  `64x112x112`.
+
+This SASS result changes the optimization target: further DP4A tuning can close
+small gaps, but approaching the `0.0108 ms` TensorRT core requires an INT8 MMA
+mainloop plus a fused activation/pooling epilogue.
+
 ## Comparison With Local Versions
 
 Latest useful measurements:
@@ -162,6 +263,11 @@ Goal: replace DP4A accumulation with Ampere INT8 MMA.
 - Store only the pooled Int8 output.
 
 This is the first version that can plausibly approach the TensorRT core time.
+
+The SASS confirms this is not optional for a TensorRT-level result: the CASK
+kernel is built around `IMMA.16816.S8.S8`, with 128 registers/thread and about
+9 KB shared memory for staging. A first custom version should target correctness
+and instruction shape before trying to match TensorRT's tile size exactly.
 
 ### v8: CUTLASS/CuTe-Based Fused Epilogue
 
