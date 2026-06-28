@@ -53,6 +53,27 @@ counting multiply and add separately. At `0.009854 ms`, TensorRT achieves about
 `10.06 TOPS`. TILE=4 recomputes about `1.266x` conv points because neighboring
 pool tiles overlap, so recomputation alone does not explain the gap.
 
+## Algebraic Fusion
+
+The activation and pooling can be merged algebraically:
+
+```text
+MaxPool(ReLU(conv)) = ReLU(MaxPool(conv))
+```
+
+For this benchmark, the int8 output quantization can also be delayed:
+
+```text
+MaxPool(clamp_relu_i8(acc >> shift))
+  = clamp_relu_i8(max(acc) >> shift)
+```
+
+This is valid because `ReLU`, the common right shift, and upper clamp are
+monotonic. Padding remains equivalent because the pooled value is initialized
+to zero, matching ReLU's floor. The target epilogue should therefore keep an
+`int32 best_acc` per `(output channel, pool output)` and run `clamp_relu_i8`
+once at final writeback.
+
 `ncu` can attach on the remote host, but hardware counters are currently blocked
 by the driver:
 
@@ -138,6 +159,72 @@ Avoid writing the complete ReLUed conv tile to shared memory and reading it back
 for pooling. Keep pool candidates in registers or write packed partials in a
 layout that minimizes `LDS.S8`. Do not use `atomicMax`; v22 already showed that
 path regresses.
+
+### v27: Register-First Pooling Epilogue Prototype
+
+Implemented before v28 as the first register-first attempt. Each warp owns one
+N-pair, computes local pool candidates from MMA accumulators in registers,
+reduces across each 4-lane row subgroup with shuffle instructions, writes one
+partial max per `(N-pair, channel, pool output)`, then performs a final 6-way
+shared-memory reduction. This avoids atomics and avoids materializing the full
+`conv_relu_tile`.
+
+Implemented result:
+
+```text
+ptx_mma_oc32_register_pool_4x4_w8_b256: 0.056778 ms, max_abs_err=0
+resource: REG=42, SHARED=16032 B
+SASS: IMMA=20, LDG=48, LDS=26, STS=67, STG=1, BAR=2
+```
+
+This confirms that simply replacing `conv_relu_tile` with per-N-pair register
+pooling is not viable. Although static `LDS` and `STG` drop, the warp-shuffle
+and per-output membership logic dominate. A future register-first attempt must
+make pool ownership part of the MMA N mapping instead of post-processing every
+N-pair against every pool output.
+
+### v28: Delayed ReLU/Quantization Accumulator Pool
+
+Use the algebraic fusion directly: keep shared pool values as raw int32
+accumulators, use `atomicMax` on int32 conv accumulators, and apply
+`clamp_relu_i8(best_acc, shift)` only once during final output writeback. This
+isolates the benefit of delaying ReLU/quantization from the larger pool-owner
+mapping problem.
+
+Implemented result:
+
+```text
+ptx_mma_oc32_delayed_relu_pool_4x4_w4_b128: 0.038386 ms, max_abs_err=0
+ptx_mma_oc32_delayed_relu_pool_4x4_w8_b256: 0.030933 ms, max_abs_err=0
+resource, W8: REG=40, SHARED=15008 B
+SASS, W8: IMMA=20, LDG=48, LDS=21, STS=3, STG=1, BAR=2
+```
+
+Delaying ReLU/quantization is correct and improves the old accumulator-pool
+idea, but shared `atomicMax` and conv-to-pool membership control still dominate.
+
+### v29: Pool-Owner N-Lane Utilization
+
+Improve on the older pool-owner idea by using the MMA N dimension for pool
+candidates. Each warp owns one pool output and computes the first 8 candidates
+in one MMA N tile, then computes candidate 9 in a second MMA tile. This avoids
+atomic updates and avoids the v23 issue where each MMA used only one of eight N
+lanes.
+
+Implemented result:
+
+```text
+ptx_mma_oc32_pool_owner_8n_w4_b128: 0.048035 ms, max_abs_err=0
+ptx_mma_oc32_pool_owner_8n_w8_b256: 0.053641 ms, max_abs_err=0
+resource, W4/W8: REG=69, SHARED=0 B
+SASS: IMMA=20, LDG=118, LDS=0, STS=0, STG=4, BAR=0
+```
+
+This is much better than the old v23 pool-owner mapping, but still too slow.
+The no-shared design rereads input/weight fragments per pool output and loses
+the cross-output reuse that makes v24 faster. A useful next direction is not
+pure pool ownership; it must combine delayed ReLU with TensorRT-like wide
+input/weight staging across several neighboring pool outputs.
 
 ## Reproduction Commands
 
