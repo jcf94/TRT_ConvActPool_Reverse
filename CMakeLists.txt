@@ -148,3 +148,69 @@ target_compile_options(bench_resnet_stem_v23 PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
   $<$<COMPILE_LANGUAGE:CXX>:-O3>
 )
+
+add_executable(bench_resnet_stem_v24 src/bench_resnet_stem_v24.cu)
+target_compile_options(bench_resnet_stem_v24 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+)
+
+add_executable(bench_resnet_stem_v25 src/bench_resnet_stem_v25.cu)
+target_compile_options(bench_resnet_stem_v25 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+)
+
+add_executable(bench_resnet_stem_v26 src/bench_resnet_stem_v26.cu)
+target_compile_options(bench_resnet_stem_v26 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+)
+
+add_executable(bench_resnet_stem_v27 src/bench_resnet_stem_v27.cu)
+target_compile_options(bench_resnet_stem_v27 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+)
+
+add_executable(bench_resnet_stem_v28 src/bench_resnet_stem_v28.cu)
+target_compile_options(bench_resnet_stem_v28 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+)
+
+add_executable(bench_resnet_stem_v29 src/bench_resnet_stem_v29.cu)
+target_compile_options(bench_resnet_stem_v29 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+)
+
+add_executable(bench_resnet_stem_v30 src/bench_resnet_stem_v30.cu)
+target_compile_options(bench_resnet_stem_v30 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+)
+
+add_executable(bench_resnet_stem_v31 src/bench_resnet_stem_v31.cu)
+target_compile_options(bench_resnet_stem_v31 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+)
+
+add_executable(bench_resnet_stem_v32 src/bench_resnet_stem_v32.cu)
+target_compile_options(bench_resnet_stem_v32 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+)
+
+add_executable(bench_resnet_stem_v33 src/bench_resnet_stem_v33.cu)
+target_compile_options(bench_resnet_stem_v33 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+)
+
+add_executable(bench_resnet_stem_v34 src/bench_resnet_stem_v34.cu)
+target_compile_options(bench_resnet_stem_v34 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+  $<$<COMPILE_LANGUAGE:CXX>:-O3>
+)

@@ -43,8 +43,8 @@ Latest measured TensorRT results on the RTX 3080 Ti:
 
 | model | engine mean | main profile entries |
 | --- | ---: | --- |
-| plain `Conv->ReLU->MaxPool` | `0.035513 ms` | fused layer `node_of_conv_out + node_of_relu_out + node_of_output`: `0.009854 ms`; input reformat `0.007416 ms`; output reformat `0.007835 ms` |
-| Q/DQ-blocked model | `0.073361 ms` | `node_of_conv_out`: `0.031945 ms`; `node_of_conv_q`: `0.006278 ms`; `node_of_conv_dq`: `0.004865 ms`; `PWN(node_of_relu_out)`: `0.005055 ms`; `node_of_output`: `0.005161 ms` |
+| plain `Conv->ReLU->MaxPool` | `0.033801 ms` | fused layer `node_of_conv_out + node_of_relu_out + node_of_output`: `0.008938 ms`; input reformat `0.007369 ms`; output reformat `0.007671 ms` |
+| Q/DQ-blocked model | `0.064032 ms` | `node_of_conv_out`: `0.029057 ms`; `node_of_conv_q`: `0.005975 ms`; `node_of_conv_dq`: `0.004217 ms`; `PWN(node_of_relu_out)`: `0.004846 ms`; `node_of_output`: `0.004740 ms` |
 
 Conclusion: the reproduction matches the article's behavior. The plain graph is
 compiled into one fused TensorRT layer, while the Q/DQ graph is split and is
@@ -102,7 +102,7 @@ Latest optimization results:
 | v5 | `fused_tiled_oc4_14x14 = 0.044329 ms` | computes 4 output channels per thread for each conv point; reuses input packing |
 | v6 | `fused_tiled_oc8_8x8 = 0.032353 ms` | computes 8 output channels per thread; best direct-DP4A fused kernel so far |
 | v7 | `fused_tiled_oc16_14x14 = 0.038880 ms` | OC16 increases pressure and regresses versus OC8 |
-| v8 | `fused_tiled_oc8_8x8_b128 = 0.031077 ms` | OC8 with 128 threads per block; current best |
+| v8 | `fused_tiled_oc8_8x8_b128 = 0.031077 ms` | OC8 with 128 threads per block; best direct-DP4A milestone |
 | v9 | `fused_tiled_oc8_10x10_b128 = 0.035623 ms` | 10x10/12x12 spatial tile sweep did not beat v8 |
 | v10 | `oc8_smem_input_8x8_b128 = 0.034136 ms` | staging the input tile in shared memory regressed versus v8 |
 | v11 | `fused_tiled_oc8_8x8_b128 = 0.030482 ms` | additional 6x6/7x7/16x16 and block-size sweeps did not beat v8 |
@@ -111,13 +111,14 @@ Latest optimization results:
 | v14 | `ptx_mma_oc32_smem_b_4x4_w4_b128 = 0.043008 ms` | smaller tile improves shared-B staging cost and warp utilization |
 | v15 | `ptx_mma_oc64_smem_b_4x4_w4_b128 = 0.041651 ms` | reuses one B tile across all 64 output channels; best PTX MMA so far |
 | v16 | `ptx_mma_oc64_smem_b_4x4_w4_b128 = 0.044665 ms` | channel-split pooling epilogue regressed versus v15 |
-| v17 | `ptx_mma_oc32_dual_n_4x4_w4_b128 = 0.038609 ms` | each warp computes two N-groups to reduce loop/fragment overhead; current best PTX MMA |
+| v17 | `ptx_mma_oc32_dual_n_4x4_w4_b128 = 0.038609 ms` | each warp computes two N-groups to reduce loop/fragment overhead |
 | v18 | `ptx_mma_oc32_dual_n_4x4_w4_b128 = 0.038691 ms` | dual-N tile sweep; 5x5/6x6/7x7 regressed |
-| v19 | `ptx_mma_oc32_dual_n_packed_b_4x4 = 0.032719 ms` | packs shared B tile as `int8x4`, reducing byte shared loads; current best PTX MMA |
-| v20 | `ptx_mma_oc32_dual_n_packed_ab_4x4 = 0.026198 ms` | packs both weight A and activation B fragments; current best custom kernel |
+| v19 | `ptx_mma_oc32_dual_n_packed_b_4x4 = 0.032719 ms` | packs shared B tile as `int8x4`, reducing byte shared loads |
+| v20 | `ptx_mma_oc32_dual_n_packed_ab_4x4 = 0.026198 ms` | packs both weight A and activation B fragments |
 | v21 | `ptx_mma_oc32_dual_n_packed_ab_epilogue = 0.028079 ms` | packed pooling epilogue regressed due to repack and extra sync |
 | v22 | `ptx_mma_oc32_dual_n_accum_pool_4x4 = 0.034310 ms` | accumulator-path ReLU/MaxPool with shared atomics was correct but too slow |
 | v23 | `ptx_mma_oc32_pool_owner_w4_b128 = 0.511420 ms` | pool-output owner without batching wastes 7/8 MMA N columns and is not viable |
+| v24 | `ptx_mma_oc32_dual_n_packed_ab_4x4_w8_b256 = 0.023772 ms` | refactored latest packed A/B MMA kernel; interior fast path plus block/warp sweep |
 
 The v4 result shows that tensor-core INT8 convolution is necessary to approach
 TensorRT. It also shows why plain GEMM is not enough: materializing the full
@@ -169,6 +170,7 @@ The latest SASS/resource comparison is:
 | v15 OC64 shared-B | `0.041651 ms` | 167 | 18144 B | 20 | many `LDG.E.U8` and `LDS.S8` |
 | v17 OC32 dual-N shared-B | `0.038609 ms` | 56 | 15552 B | 20 | fewer byte loads than v15, but still no wide loads |
 | v20 OC32 dual-N packed A/B | `0.026198 ms` | 48 | 15552 B | 20 | almost all weight byte loads removed |
+| v24 OC32 packed A/B w8/b256 | `0.023772 ms` | not re-dumped | 15552 B | 20 | same packed schedule, better launch geometry |
 
 `ncu` hardware-counter profiling remains blocked by host driver permissions
 (`ERR_NVGPUCTRPERM`), so the actionable profiling signal is SASS/resource usage.
@@ -201,6 +203,15 @@ only used one of the eight MMA N columns for useful output and recomputed
 overlapping conv points heavily, so it regressed to `0.511420 ms`. Any viable
 owner-mode design must batch multiple pool outputs into the MMA N dimension.
 
+v24 returns to the v20 packed A/B dual-N MMA schedule and focuses on launch
+geometry plus code organization. The best measured case is
+`ptx_mma_oc32_dual_n_packed_ab_4x4_w8_b256 = 0.023772 ms` with
+`max_abs_err=0`. The nearby `w4_b256` configuration is effectively tied at
+`0.023812 ms`; larger 5x5/6x6/7x7 spatial tiles regress to
+`0.032059/0.036485/0.042979 ms`. This is now faster than the TensorRT whole
+engine timing, but still about 2.7x slower than TensorRT's fused layer core
+(`0.008938 ms`).
+
 ## Optimization Plan
 
 The next target is TensorRT's fused layer time, about `0.01 ms` on the current
@@ -217,6 +228,9 @@ machine. The planned sequence is:
 
 Each optimization attempt lives in a separate source file:
 
+- `src/resnet_stem_common.cuh`: shared benchmark harness, tensor shapes,
+  argument parsing, CPU reference, timing, result printing, and packed MMA weight
+  preparation for refactored versions.
 - `src/bench_resnet_stem.cu`: baseline implementation.
 - `src/bench_resnet_stem_v2.cu`: v2 attempt with prepacked DP4A weights.
 - `src/bench_resnet_stem_v3.cu`: v3 attempt with prepacked DP4A weights plus
@@ -241,22 +255,23 @@ Each optimization attempt lives in a separate source file:
   reuse.
 - `src/bench_resnet_stem_v14.cu`: v14 PTX MMA tile-size sweep for shared-B
   staging.
-- `src/bench_resnet_stem_v15.cu`: v15 OC64 PTX MMA shared-B reuse, current best
-  OC64 PTX MMA version.
+- `src/bench_resnet_stem_v15.cu`: v15 OC64 PTX MMA shared-B reuse.
 - `src/bench_resnet_stem_v16.cu`: v16 channel-split pooling epilogue experiment.
-- `src/bench_resnet_stem_v17.cu`: v17 OC32 dual-N PTX MMA shared-B kernel,
-  current best PTX MMA version.
+- `src/bench_resnet_stem_v17.cu`: v17 OC32 dual-N PTX MMA shared-B kernel.
 - `src/bench_resnet_stem_v18.cu`: v18 dual-N tile-size sweep.
 - `src/bench_resnet_stem_v19.cu`: v19 packed shared-B tile for the v17 dual-N
   MMA kernel.
-- `src/bench_resnet_stem_v20.cu`: v20 packed A/B PTX MMA kernel, current best
-  custom version.
+- `src/bench_resnet_stem_v20.cu`: v20 packed A/B PTX MMA kernel.
 - `src/bench_resnet_stem_v21.cu`: v21 packed pooling epilogue experiment.
 - `src/bench_resnet_stem_v22.cu`: v22 accumulator-path ReLU/MaxPool experiment
   using shared atomics.
 - `src/bench_resnet_stem_v23.cu`: v23 simple pool-output owner experiment.
-- Future attempts should use `src/bench_resnet_stem_v24.cu`,
-  `src/bench_resnet_stem_v25.cu`, and so on.
+- `src/bench_resnet_stem_v24.cu`: v24 refactored packed A/B MMA experiment.
+  Unlike earlier archived versions, it includes the shared harness and keeps only
+  the implementation and sweep cases unique to v24.
+- Future attempts should follow the v24 layout: put reusable benchmark support
+  in `src/resnet_stem_common.cuh`, and keep each `bench_resnet_stem_v*.cu` file
+  limited to that version's unique kernels and benchmark cases.
 
 ## Notes
 
