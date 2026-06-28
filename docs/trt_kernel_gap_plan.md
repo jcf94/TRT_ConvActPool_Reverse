@@ -226,6 +226,80 @@ the cross-output reuse that makes v24 faster. A useful next direction is not
 pure pool ownership; it must combine delayed ReLU with TensorRT-like wide
 input/weight staging across several neighboring pool outputs.
 
+### v30: Raw Accumulator Tile in v24 Shape
+
+Keep the v24 high-reuse MMA/tile structure, but replace the int8
+`conv_relu_tile` with an int32 `conv_acc_tile`. Pooling takes the max over raw
+accumulators, then applies `clamp_relu_i8` once per final output. This isolates
+whether algebraic delayed ReLU helps when the rest of the data-reuse structure
+matches the current best custom kernel.
+
+Implemented result:
+
+```text
+ptx_mma_oc32_raw_acc_pool_4x4_w8_b256: 0.025424 ms, max_abs_err=0
+ptx_mma_oc32_raw_acc_pool_4x4_w4_b256: 0.025570 ms, max_abs_err=0
+ptx_mma_oc32_raw_acc_pool_4x4_w8_b192: 0.029558 ms, max_abs_err=0
+resource: REG=48, SHARED=23328 B
+SASS: IMMA=20, LDG=48, LDS=212, STS=18, STG=32, BAR=2
+```
+
+This confirms delayed ReLU is not enough in the v24 tile if raw accumulators are
+stored as int32. The increased shared footprint and 32-bit shared traffic
+outweigh the saved per-conv-point clamp.
+
+### v31: int16 Raw Accumulator Tile Probe
+
+Use the v30 structure but store raw accumulators as int16 in shared memory. This
+is safe for the benchmark's current random input/weight range `[-8, 8]`, where
+the maximum absolute accumulator is about 9408. It is not safe for arbitrary
+full-range int8 inputs, so treat it as a performance probe for narrower raw
+shared storage rather than a final general solution.
+
+Implemented result:
+
+```text
+ptx_mma_oc32_raw_acc16_pool_4x4_w8_b256: 0.024975 ms, max_abs_err=0
+ptx_mma_oc32_raw_acc16_pool_4x4_w4_b256: 0.024941 ms, max_abs_err=0
+ptx_mma_oc32_raw_acc16_pool_4x4_w8_b192: 0.027007 ms, max_abs_err=0
+resource: REG=48, SHARED=18144 B
+SASS: IMMA=20, LDG=48, LDS=308, STS=18, STG=32, BAR=2
+```
+
+This improves over v30 but still loses to v24. The shared-load instruction
+count returns to the same level as v24, while shared footprint remains larger.
+Delayed ReLU/clamp should only be pursued further if the epilogue avoids the
+shared conv tile or packs/reduces raw accumulators in registers.
+
+### v32-v33: Channel-Grouped Pool Epilogue
+
+Return to the v24 int8 `conv_relu_tile`, but vary how many output channels each
+pool epilogue task owns. v24 owns all 32 channels per pool output. v32 owns 4
+channels per task, reducing per-thread registers and static shared-load count.
+v33 owns 8 channels per task, attempting to balance lower task count with lower
+register pressure.
+
+Implemented result:
+
+```text
+v24 group32 baseline, 4x4_w8_b256: 0.023428-0.023806 ms
+v32 group4,  4x4_w8_b256:          0.023522 ms, max_abs_err=0
+v33 group8,  4x4_w8_b256:          0.023112-0.023406 ms, max_abs_err=0
+v34 group16, 4x4_w8_b256:          0.022947-0.023376 ms, max_abs_err=0
+```
+
+SASS/resource for the best `TILE=4, WARPS=8` shape:
+
+| epilogue owner | REG | SHARED | LDS | STG |
+| --- | ---: | ---: | ---: | ---: |
+| group32/v24 | 48 | 15552 B | 308 | 32 |
+| group4/v32 | 40 | 15552 B | 56 | 4 |
+| group8/v33 | 40 | 15552 B | 92 | 8 |
+| group16/v34 | 40 | 15552 B | 164 | 16 |
+
+The best balance is currently group16: it keeps lower register pressure than
+v24 while avoiding the higher task scheduling overhead of group4/group8.
+
 ## Reproduction Commands
 
 ```bash
