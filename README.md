@@ -203,6 +203,7 @@ coverage is proven (err=0).
 | v70 | active | `v70_halo13x9 = 0.0110 ms`, err=0 | minimal 13x9 halo tile, 5 warps; less overlap recompute vs v69 |
 | v71 | active | `v71_halo14x9_4w = 0.0109 ms`, err=0 | 14x9 tile + 4 warps (matches v67/68 warp count) -> matches TRT 0.0108 with correct output |
 | v72 | active | `v72_halo14x9_3stage = 0.0106 ms`, **err=0** (BEST, ~TRT) | v71 + 3-stage cp.async (BAR cut), REG106/SHARED20KB; first CORRECT kernel at/under TRT 0.0108 ms. smem high; v71 keeps 9KB if occupancy matters |
+| v72_ablation | active | `full=0.0108 / nopool=0.0087 / conv_only=0.0087 ms`, err=0 | epilogue ablation on v72 core (`v72_conv<RELU>`): MaxPool ≈0.0021ms (~20%), ReLU free, conv MMA alone ≈0.0087ms. nopool/conv_only emit full 112x112 conv NHWC |
 - a current best or reproducible comparison target,
 - the first implementation of a new strategy,
 - a decisive negative result that changes the optimization direction,
@@ -336,6 +337,28 @@ timed fused conv+ReLU+pool kernel. Shapes: input `3x224x224 int8`, conv `7x7 s2`
 (20KB, 3-stage) for speed; **v71** is the lean twin (9KB ≈ TRT 9008B, 0.0109 ms)
 when occupancy matters. The pack/reformat layers carry the byte-granular I/O TRT
 also offloads, so the fused core stays vectorized.
+
+### Epilogue ablation (where the fused-tail time goes)
+
+`bench_resnet_stem_v72_ablation` reuses the identical v72 conv MMA core
+(templated `v72_conv<RELU>`) and only swaps the epilogue, to isolate the cost of
+the MaxPool and ReLU stages. nopool/conv_only emit the full `112x112` conv tensor
+(NHWC), so the numbers include the larger store volume that pooling otherwise
+collapses 4:1. All three are bit-exact (`max_abs_err=0`) vs dedicated conv-/pool-
+resolution CPU references. RTX 3080 Ti, sm_86, CUDA 11.8, `--iters 2000 --warmup 200`:
+
+| variant | epilogue | time | Δ vs full |
+| --- | --- | --- | --- |
+| `v72_full` | Conv + ReLU + MaxPool | `0.0108 ms` | — |
+| `v72_nopool` | Conv + ReLU | `0.0087 ms` | −0.0021 (~20%) |
+| `v72_conv_only` | Conv (no ReLU, no pool) | `0.0087 ms` | −0.0021 |
+
+- **MaxPool ≈ 0.0021 ms (~20% of the kernel).** This holds *despite* nopool
+  writing ~4x more output, so the cost is the `vmax4` 3x3 reduction + `__syncthreads`,
+  not stores. The remaining gap-to-TRT lives in the fused pool tail, not the MMA.
+- **ReLU is free** (nopool == conv_only): it folds into the int8 clamp in the
+  epilogue, adding no measurable instructions.
+- **Conv MMA core alone ≈ 0.0087 ms**, already under the TRT fused core (~0.0108 ms).
 
 
 - CUDA: `/usr/local/cuda-11.8`.
