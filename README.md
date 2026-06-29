@@ -296,3 +296,5 @@ Each optimization attempt lives in a separate source file:
   points across adjacent pool windows. Use it as a starting point for tiled
   shared-memory/register reuse optimization.
 | v41_regpool_oc64 | register-strip pool, no conv tile | 0.0266 | 0 |
+| v42_implgemm_pc8 | 4-warp OC strip, reg-ish pool, LDS 596->57 | 0.0214 | 0 |
+| v43_8x8_reg64pool | 8-row tile + register best[64] | 0.0378 | 0 |

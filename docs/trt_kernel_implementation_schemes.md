@@ -151,3 +151,34 @@ rows recomputed per pool row → ~75% redundant conv. Lesson: dropping the tile
 alone doesn't help; TRT's win is reusing 17 conv rows across an 8-pool-row tile so
 MMA is amortized. Beating 0.018 needs wide tile + register pool + occupancy at
 once — the full CUTLASS implicit-GEMM. v38 ≈ 0.0183 ms stays best.
+
+## 13. v42 — implicit-GEMM strip, 4-warp OC, vectorized pool (correct, plateau)
+
+128-thread CTA, one OC group/warp, wide pool-col strip, 3 conv rows/pool row.
+SASS: LDS cut to 57 (from v38's 596) — pool re-read wall is gone — but IMMA/CTA
+fell to ~15 (3-row strip too small) vs TRT 240. pc8 0.0214, pc14 0.0254, pc28
+0.039. Removing the pool wall didn't help because the 8-row tile (17 conv rows
+→ 8 pool rows, IMMA amortized) is what makes TRT's 240-IMMA straight-line CTA
+win; a per-pool-row strip recomputes conv rows. The two requirements — register
+pool AND 8-row tile — fight each other under sm_86 reg/smem limits. Definitive:
+this packed-MMA family caps ~0.018; full parity needs CUTLASS Ampere int8 conv
+with cp.async/LDSM multistage. **v38 ≈ 0.0183 ms remains best.**
+
+## 14. v43 — 8-row tile + register best[64] pool (regressed) → verdict
+
+Combined 8x8 tile with a 64-wide register pool to drop the shared re-read while
+keeping IMMA high. best[64] int spills, big smem → 0.0378 (8x8) / 0.0304 (7x7),
+worse. This closes the search: the two TRT requirements (240 straight IMMA via
+8-row tile AND register F2IP pool) cannot coexist within sm_86's 64 reg + 100 KB
+smem at useful occupancy when hand-coded. True 0.0108 parity requires the actual
+CUTLASS Ampere int8 implicit-GEMM kernel TRT links (cp.async multistage + LDSM +
+F2IP epilogue). Best reproducible hand kernel: **v38 ≈ 0.0183 ms (1.7× TRT)**.
+
+## 15. CUTLASS link blocked — final
+
+Tried to link the real CUTLASS int8 implicit-GEMM (the kernel TRT actually
+generates). The only copy on the box (TensorRT-LLM 3rdparty/cutlass) is an empty
+submodule; no `implicit_gemm_convolution.h` anywhere, no network to clone. So
+0.0108 ms parity (CUTLASS-tuned multistage IMMA) is unreachable by hand here.
+Final standing: 9 hand schemes v35–v43, all err=0; **v38 ≈ 0.0183 ms** best,
+1.7× TRT, gap is occupancy/tile not correctness. Recommend finalizing v38.
