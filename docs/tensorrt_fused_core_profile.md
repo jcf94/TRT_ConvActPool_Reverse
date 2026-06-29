@@ -399,3 +399,17 @@ packed (8 int8/store) so only 2 STG. The reformats convert NCHW<->packed.
 Custom v56 (byte NCHW): 81 LDG.E.U8 + 64 STG.E.U8. THE remaining SASS gap is I/O
 width, not compute (240 IMMA already matched). Next: vectorize to NHWC/packed
 LDG.128 + STG.128 to collapse 81->~12 LDG and 64->4 STG.
+
+## Core I/O Tensor Reality (2026-06-29, EngineInspector)
+
+```text
+Reformat in : [1,3,224,224] Float -> [1,3,224,224] Int8
+Core        : [1,3,224,224] Int8  -> [1,64,56,56] Int8
+Reformat out: [1,64,56,56] Int8   -> [1,64,56,56] Int8
+```
+
+Core input is only 3ch int8 (CHW4-padded), NOT 32ch. So 12 LDG.128 are weights/
+output staging, not input. Input is tiny => not the bottleneck. v58's 4ch pad
+matches TRT's input format. Output reformat Int8->Int8 = core writes packed
+(CHW32) then unpack. v57 vectorized output already matches that contract. The
+remaining ~2x perf gap is the mainloop schedule/pipelining, not I/O width.
