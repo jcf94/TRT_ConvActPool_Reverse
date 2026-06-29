@@ -371,3 +371,31 @@ Next useful direction:
   warp owner mode is not viable because it wastes most tensor-core lanes.
 - Avoid larger spatial tiles with this shared-B design; v18 showed 5x5, 6x6,
   and 7x7 all regress.
+
+## Input/Output Reformat Analysis (2026-06-29)
+
+Engine timing shows two reformat kernels wrapping the core:
+
+```text
+Reformat input  -> 0.009117 ms
+core CaskConvActPool -> 0.010787 ms
+Reformat output -> 0.008159 ms
+```
+
+These are not overhead to ignore — they reveal the core's I/O contract. Core SASS:
+
+| op | width | count |
+| --- | --- | ---: |
+| LDG | .E.128 | 12 |
+| LDG | .E.64 | 26 |
+| STG | .E.64 | 2 |
+| STS | .128 | 9 |
+| STS | .64 | 11 |
+
+Zero byte loads/stores. The core only sees a 32-channel-packed (NC32HW32-style)
+layout: input is pre-padded 3->32ch so every LDG is 128/64-bit; output is written
+packed (8 int8/store) so only 2 STG. The reformats convert NCHW<->packed.
+
+Custom v56 (byte NCHW): 81 LDG.E.U8 + 64 STG.E.U8. THE remaining SASS gap is I/O
+width, not compute (240 IMMA already matched). Next: vectorize to NHWC/packed
+LDG.128 + STG.128 to collapse 81->~12 LDG and 64->4 STG.
