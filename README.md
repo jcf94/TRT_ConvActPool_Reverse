@@ -67,7 +67,7 @@ more scalar-DP4A tuning.
 
 ## Current Standing
 
-Best reproducible hand-written CUDA kernel: `bench_resnet_stem_v64`, about
+Best reproducible hand-written CUDA kernel: `bench_resnet_stem_v65` (v64 variant), about 0.0170 ms; `v64` about
 `0.0172 ms`, `max_abs_err=2` (integer-shift quant vs TRT float, like v57). This
 is about 1.6x slower than TensorRT's fused core (`~0.0108 ms`). It follows TRT's
 split: an untimed im2col-pack "input reformat", a timed fused conv-act-pool
