@@ -138,9 +138,9 @@ The remaining gap is architectural, not a simple parameter issue:
 | v46 | active | `v46_t8 = 0.0418 ms`, err=0 | transposed [N][OC] pool + vmax4; strided MMA store regresses (negative) |
 | v47 | active | `v47_3x3 = 0.0218 ms`, err=0 | occupancy sweep, confirms ~0.0216 floor (negative) |
 | v48 | active | `v48_240imma_64x96 = 0.034 ms`, err=0 | first instruction-count match: 240 IMMA via 64OC x 96 conv-pts/CTA, K160; REG255 spills, no epilogue yet |
-## Source Retention Policy
-
-Keep a version in `src/` when it is one of:
+| v49 | active | `v49_240imma_pool = 0.045 ms`, err=2 | 240 IMMA + I2FP dequant + 3x3 pool epilogue; float scale rounding vs int ref = err2; LDS/STG still high |## Source Retention Policy
+| v50 | active | `v50_240imma_pool = 0.0255 ms`, err=2 | 240 IMMA + REG116(no spill) + register pool, LDS696->156; err2 boundary (112%12); STS/STG still high |
+| v51 | active | `v51_240imma = 0.044 ms`, err=2 | halo-stepped 240-IMMA tile, REG114; more CTAs regressed vs v50; STS/STG still high |Keep a version in `src/` when it is one of:
 
 - a current best or reproducible comparison target,
 - the first implementation of a new strategy,

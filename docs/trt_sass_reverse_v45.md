@@ -187,3 +187,18 @@ SASS. Measured: IMMA 240 (=TRT), err=0, 0.034 ms.
 
 Next: bring REG→128 (cooperative warps), add F2IP/I2FP/FFMA pool epilogue and
 2× STG, wide LDG.128/64 → full behavior parity.
+
+## 11. v49 — epilogue behavior toward TRT (240 IMMA kept)
+
+Added I2FP dequant + 3x3 register pool on the 240-IMMA core. counts: IMMA 240,
+I2FP 192, STG 64, LDS 696, REG255. err=2 (float scale 1/512 vs integer shift9
+rounding). Still off TRT (I2FP80/FFMA80/F2IP40/STG2): pool re-reads smem (LDS),
+one-warp acc spills. Next: cooperative 256-thread acc to drop REG to 128 + STS
+20, register pool to cut LDS to ~50 + 2 STG, true F2IP via int8 mma epilogue.
+
+## 12. v50 — REG/LDS parity (240 IMMA kept)
+
+NG-outer frees acc[4][4] per column. REG 116 (no spill, vs TRT 128), IMMA 240,
+LDS 156, BAR 2, 0.0255 ms (near v38). err=2 boundary only: 8x12 conv block
+doesn't tile 112 evenly; pool windows cross block edges. STS 193 / STG 64 still
+high. Next: halo-aligned tile for err=0, packed pool store -> 2 STG, reduce STS.

@@ -51,3 +51,6 @@ target_compile_options(bench_resnet_stem_v44 PRIVATE
 add_resnet_stem_bench(bench_resnet_stem_v46 src/bench_resnet_stem_v46.cu)
 add_resnet_stem_bench(bench_resnet_stem_v47 src/bench_resnet_stem_v47.cu)
 add_resnet_stem_bench(bench_resnet_stem_v48 src/bench_resnet_stem_v48.cu)
+add_resnet_stem_bench(bench_resnet_stem_v49 src/bench_resnet_stem_v49.cu)
+add_resnet_stem_bench(bench_resnet_stem_v50 src/bench_resnet_stem_v50.cu)
+add_resnet_stem_bench(bench_resnet_stem_v51 src/bench_resnet_stem_v51.cu)
