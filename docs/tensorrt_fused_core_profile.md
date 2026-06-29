@@ -433,3 +433,8 @@ staged once per K-block + K streamed/double-buffered (cp.async) so one warp keep
 240 IMMA hot with tiny smem/STS. Byte register-rebuild (v60) spills; full b4 stage
 (v59) blows smem/STS. v57 best perf (looped), v59 best instr-shape. Next: cp.async
 double-buffer a small packed-B tile to unroll 240 IMMA at <10KB without STS blowup.
+
+v61: K-streaming with ng-outer requires all-ng acc resident (192 regs) -> spill,
+0.045ms. Lesson: K-stream + low-reg needs a SMALLER N tile so fewer accumulators
+stay live. TRT's tile_cols_120 wide but K likely held compact in 9KB. Next try:
+shrink N (CB 4x6=24pts, 60 IMMA) + K-stream + cp.async, many CTAs.
