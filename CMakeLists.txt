@@ -65,3 +65,5 @@ add_resnet_stem_bench(bench_resnet_stem_v60 src/bench_resnet_stem_v60.cu)
 add_resnet_stem_bench(bench_resnet_stem_v61 src/bench_resnet_stem_v61.cu)
 add_resnet_stem_bench(bench_resnet_stem_v62 src/bench_resnet_stem_v62.cu)
 add_resnet_stem_bench(bench_resnet_stem_v63 src/bench_resnet_stem_v63.cu)
+
+add_resnet_stem_bench(bench_resnet_stem_v64 src/bench_resnet_stem_v64.cu)
