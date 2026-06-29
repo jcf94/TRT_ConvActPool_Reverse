@@ -7,6 +7,15 @@ This repository reverse-engineers and reproduces TensorRT's INT8
 iterate on hand-written kernels, compare them with TensorRT's fused
 `CaskConvActPool` layer, and document the path to bit-exact TRT-parity.
 
+**Headline result (RTX 3080 Ti, sm_86, CUDA 11.8):** the best correct hand-written
+kernel `bench_resnet_stem_v72` reaches **~0.0106–0.0108 ms with `max_abs_err=0`**,
+matching/under TensorRT's fused `CaskConvActPool` core (**~0.0108 ms**) with
+bit-exact output. Epilogue ablation (`bench_resnet_stem_v72_ablation`) shows the
+fused MaxPool tail costs **~0.0021 ms (~20%)**, ReLU is essentially free, and the
+conv MMA core alone runs at **~0.0087 ms** — so v72 is at TRT parity and the
+remaining tail is the pool reduction, not the tensor-core schedule.
+
+
 Current operator:
 `Conv 7x7 stride 2 pad 3 -> ReLU -> MaxPool 3x3 stride 2 pad 1`.
 
