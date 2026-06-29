@@ -282,13 +282,13 @@ timed fused conv+ReLU+pool kernel. Shapes: input `3x224x224 int8`, conv `7x7 s2`
 ```text
         x[3,224,224] int8 (NCHW)
                 │
-   ┌────────────▼─────────────┐  pack_input<<<112*112, 40>>>   (untimed reformat 1)
+   ┌────────────▼──────────────┐  pack_input<<<112*112, 40>>>   (untimed reformat 1)
    │  im2col + 7x7 halo gather │  each conv-pt -> 40 packed int8x4 groups
-   └────────────┬─────────────┘
+   └────────────┬──────────────┘
         b[conv_pt, 40] int8x4  (DRAM, contiguous → LDG.128)
                 │
-   ┌────────────▼───────────────────────────────────────────────┐
-   │  v72_kernel<<<140 blocks, 128 thr (4 warps)>>>  (TIMED fused) │
+   ┌────────────▼─────────────────────────────────────────────────┐
+   │  v72_kernel<<<140 blocks, 128 thr (4 warps)>>>  (TIMED fused)│
    │                                                              │
    │  block = one 6x4 pool tile; stages a 14x9 conv halo tile     │
    │                                                              │
@@ -298,7 +298,7 @@ timed fused conv+ReLU+pool kernel. Shapes: input `3x224x224 int8`, conv `7x7 s2`
    │                       acc[ng][oc][4] int32                   │
    │   epilogue: clamp_relu_i8(acc>>9) → cr_s[14x9, 64ch] int8    │
    │   pool: 96 quad-tasks, vmax4.s8 over 3x3 → STG.128 ×2 → y    │
-   └────────────┬───────────────────────────────────────────────┘
+   └────────────┬─────────────────────────────────────────────────┘
         y[pool_pt,64] int8 (NHWC)
                 │
    ┌────────────▼─────────────┐  reformat 2 (untimed): NHWC → NCHW
@@ -322,7 +322,7 @@ timed fused conv+ReLU+pool kernel. Shapes: input `3x224x224 int8`, conv `7x7 s2`
 
 ```text
   conv-pt s = cy*14 + cx   in cr_s[126, 64ch]
-        ┌─ 3x3 max ─┐  best[4] = vmax4.s8(window)   per pool-pt q
+        ┌─ 3x3 max ──┐  best[4] = vmax4.s8(window)   per pool-pt q
         └────────────┘  →  uint4 STG.128 ×2  →  64 channels NHWC
 ```
 
