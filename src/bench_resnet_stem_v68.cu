@@ -39,7 +39,7 @@ __global__ void v68_kernel(const uint32_t* __restrict__ b, const uint32_t* __res
   constexpr int ST = 2;
   __shared__ uint32_t bb[2][N_TILE * KC];
   uint32_t* cr = &bb[0][0];
-  int bx = (blockIdx.x % (CONV_OW / CB_W)) * CB_W, by = blockIdx.x / (CONV_OW / CB_W) * CB_H;
+  constexpr int GX=(CONV_OW+CB_W-1)/CB_W; int bx=(blockIdx.x%GX)*CB_W, by=blockIdx.x/GX*CB_H;
   int tid = threadIdx.x, lid = tid & 31, gid = lid >> 2, lig = lid & 3, warp = tid >> 5;
   int32_t acc[NG_PW][OCG][4] = {};
   // 3-stage cp.async pipeline: prefetch 2 chunks ahead, wait_group(1), 1 BAR/chunk
@@ -105,7 +105,7 @@ int main(int argc, char** argv) {
   CUDA_CHECK(cudaMemcpy(dx,hx.data(),hx.size(),cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemcpy(dw,hw4.data(),hw4.size()*4,cudaMemcpyHostToDevice));
   pack_input<<<NPTS,40>>>(dx,db);  // untimed input reformat
-  dim3 g((CONV_OW/CB_W)*(CONV_OH/CB_H),1,1);
+  dim3 g(((CONV_OW+CB_W-1)/CB_W)*((CONV_OH+CB_H-1)/CB_H),1,1);
   float ms=time_kernel([&]{v68_kernel<<<g,WARPS*32>>>(db,dw,dy,sh);},a.warmup,a.iters);
   CUDA_CHECK(cudaMemcpy(hy.data(),dy,hy.size(),cudaMemcpyDeviceToHost));
   print_result(a,"v68_alias_par",ms,max_abs_err(hr_n,hy));
