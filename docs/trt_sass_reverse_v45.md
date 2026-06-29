@@ -202,3 +202,11 @@ NG-outer frees acc[4][4] per column. REG 116 (no spill, vs TRT 128), IMMA 240,
 LDS 156, BAR 2, 0.0255 ms (near v38). err=2 boundary only: 8x12 conv block
 doesn't tile 112 evenly; pool windows cross block edges. STS 193 / STG 64 still
 high. Next: halo-aligned tile for err=0, packed pool store -> 2 STG, reduce STS.
+
+## 13. v52 — occupancy via more warps fails; smem is the wall
+
+4-warp needed 84KB (over 48KB); 2-warp dup smem=43KB caps 1 CTA/SM, 0.080 ms.
+Multi-warp doesn't help: per-warp B-stage (15.4KB) dominates. TRT fits 9KB by
+NOT staging full B per N (reuse from regs + cp.async). v50 0.0255 stays best
+hand replica (240 IMMA, REG116). Closing to 0.0108 = shrink smem<10KB via
+cp.async/LDSM streaming — CUTLASS-scale, exhausted by hand.

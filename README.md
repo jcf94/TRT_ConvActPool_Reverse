@@ -141,7 +141,7 @@ The remaining gap is architectural, not a simple parameter issue:
 | v49 | active | `v49_240imma_pool = 0.045 ms`, err=2 | 240 IMMA + I2FP dequant + 3x3 pool epilogue; float scale rounding vs int ref = err2; LDS/STG still high |## Source Retention Policy
 | v50 | active | `v50_240imma_pool = 0.0255 ms`, err=2 | 240 IMMA + REG116(no spill) + register pool, LDS696->156; err2 boundary (112%12); STS/STG still high |
 | v51 | active | `v51_240imma = 0.044 ms`, err=2 | halo-stepped 240-IMMA tile, REG114; more CTAs regressed vs v50; STS/STG still high |Keep a version in `src/` when it is one of:
-
+| v52 | active | `v52 = 0.080 ms`, err=1 | 2-warp/CTA dup smem 43KB -> 1 CTA/SM, regressed; smem is the occupancy wall (negative) |
 - a current best or reproducible comparison target,
 - the first implementation of a new strategy,
 - a decisive negative result that changes the optimization direction,
