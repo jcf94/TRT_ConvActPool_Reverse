@@ -134,6 +134,7 @@ The remaining gap is architectural, not a simple parameter issue:
 | v42 | active | `v42_implgemm_pc8 = 0.0214 ms` | implicit-GEMM strip cuts pool LDS but loses IMMA density |
 | v43 | active | `v43_8x8_reg64pool = 0.0378 ms` | 8-row tile plus large register pool spills/regresses |
 | v44 | active | `v44_cutlass_conv = 0.0685 ms`; `v44_cutlass_conv_pool = 0.0877 ms` | stock CUTLASS comparison, not competitive on this shape |
+| v45 | active | `v45_trt_replica_8x7 = 0.0414 ms`, err=0 | direct SASS reverse: 8-row tile, IMMA mainloop, packed-byte register pool; correct but smem-bound, ~2.3x v38 (see `docs/trt_sass_reverse_v45.md`) |
 
 ## Source Retention Policy
 

@@ -37,6 +37,7 @@ add_resnet_stem_bench(bench_resnet_stem_v39 src/bench_resnet_stem_v39.cu)
 add_resnet_stem_bench(bench_resnet_stem_v41 src/bench_resnet_stem_v41.cu)
 add_resnet_stem_bench(bench_resnet_stem_v42 src/bench_resnet_stem_v42.cu)
 add_resnet_stem_bench(bench_resnet_stem_v43 src/bench_resnet_stem_v43.cu)
+add_resnet_stem_bench(bench_resnet_stem_v45 src/bench_resnet_stem_v45.cu)
 
 add_executable(bench_resnet_stem_v44 src/bench_resnet_stem_v44.cu)
 target_include_directories(bench_resnet_stem_v44 PRIVATE
