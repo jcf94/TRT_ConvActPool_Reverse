@@ -376,3 +376,38 @@ resolution CPU references. RTX 3080 Ti, sm_86, CUDA 11.8, `--iters 2000 --warmup
   followed by `cuobjdump -sass -arch sm_86` on the extracted fatbin.
 - The comparison target is TensorRT's fused `CaskConvActPool` layer
   (`~0.01 ms`), not whole-engine time.
+
+## Repository Structure
+
+```text
+TRT_ConvActPool_Reverse/
+├── README.md                     # Authoritative log: every v* attempt, best timings, gap-to-TRT plan
+├── AGENTS.md                     # Repo guidelines (structure, build/test, style, ablation conventions)
+├── CMakeLists.txt                # Build config (CUDA arch 86); one add_resnet_stem_bench per active target
+├── src/                          # Active benchmark sources (29 .cu) + shared harness
+│   ├── resnet_stem_common.cuh    # Shapes, CUDA_CHECK, arg parsing, CPU reference, timing, packed-MMA weights
+│   ├── bench_resnet_stem.cu      # Baseline benchmark
+│   ├── bench_resnet_stem_vN.cu   # Versioned optimization attempts (best correct: v72, ~0.0108 ms, err=0)
+│   ├── bench_resnet_stem_v72_ablation.cu  # Epilogue ablation: conv / conv+relu / conv+relu+pool
+│   └── legacy/                   # Non-milestone exploratory sources, not in the default build
+├── scripts/                      # Build + benchmark + TensorRT/SASS tooling
+│   ├── build.sh                  # Release CMake build for sm_86
+│   ├── run_resnet_stem.sh        # Runs baseline, writes results/resnet_stem.csv
+│   ├── check_tensorrt.py         # Reports TensorRT / trtexec / libnvinfer availability
+│   ├── make_resnet_stem_onnx.py  # Generates ONNX models for TRT reproduction
+│   ├── run_tensorrt_stem.sh      # ONNX -> TRT profiling -> results/
+│   ├── run_tensorrt_python.py    # Python TRT fallback when trtexec is unavailable
+│   ├── extract_engine_fatbin.py  # Dumps the embedded fatbin from a serialized engine
+│   └── sass_summary.py           # Summarizes IMMA/DP4A/LDG instruction mix from SASS
+├── docs/                         # Profiling notes and SASS reverse-engineering records
+│   ├── tensorrt_fused_core_profile.md
+│   ├── trt_kernel_gap_plan.md
+│   ├── trt_kernel_implementation_schemes.md
+│   ├── trt_sass_reverse_v45.md
+│   └── v65_sass_diff.md
+├── results/                      # Reference TRT SASS / resource-usage dumps (generated artifacts)
+├── 3rdparty/cutlass              # CUTLASS submodule (used only by the v44 comparison)
+└── .github/                      # add-bench-version prompt + trt-sass-profile skill
+```
+
+Generated directories `build/`, `results/`, and `models/` are outputs, not source.
