@@ -438,3 +438,8 @@ v61: K-streaming with ng-outer requires all-ng acc resident (192 regs) -> spill,
 0.045ms. Lesson: K-stream + low-reg needs a SMALLER N tile so fewer accumulators
 stay live. TRT's tile_cols_120 wide but K likely held compact in 9KB. Next try:
 shrink N (CB 4x6=24pts, 60 IMMA) + K-stream + cp.async, many CTAs.
+
+v62/v63: warp sweep + small-N. 12-warp=0.0249, small-N 5x7=0.0251 (pool halo
+recompute overhead). v57 8x12 / 6-warp / 0.0225 ms is the design optimum. Tile
+must satisfy CB>=PB*2+1 for pool; smaller tiles lose halo coverage (err) or waste
+recompute. 0.0225 is the floor without TRT's exact K-stream pipeline.

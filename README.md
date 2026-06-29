@@ -152,6 +152,7 @@ The remaining gap is architectural, not a simple parameter issue:
 | v60 | active | `v60 = 0.0348 ms`, err=1 | 240 static + 8KB + 4 STG, but single-warp byte-rebuild -> LDS507/REG231 spill; conflicts (negative) |
 | v61 | active | `v61 = 0.045 ms`, err=2 | K-stream 2 chunks: smem 21->15KB but all-ng acc live -> REG255 spill (negative). Confirms TRT needs smaller N-tile for K-stream + reg trick |
 | v62 | active | `v62 = 0.0249 ms` | 12 warps/CTA; fewer CTAs/SM, regressed. 6-warp (v57) optimal across 4/6/12 sweep. v57=0.0225 is floor for this design |
+| v63 | active | `v63 = 0.0251 ms`, err=1 | small-N 5x7 tile (smem3.5KB) needs CB>=PB*2+1 for pool halo; halo overlap recompute negates occupancy gain. Confirms 8x12 (v57) optimal halo-vs-reuse |
 - a current best or reproducible comparison target,
 - the first implementation of a new strategy,
 - a decisive negative result that changes the optimization direction,
