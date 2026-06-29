@@ -147,6 +147,7 @@ The remaining gap is architectural, not a simple parameter issue:
 | v55 | active | `v55 = 0.0277 ms`, err=1 | 4 warps/CTA split 12 N-tiles, REG64/8KB; matches v50 perf with TRT-class resources (smem 21->8KB). 240 IMMA total |
 | v56 | active | `v56 = 0.0263 ms`, err=1 | 6 warps; marginal over v55 -> warp count saturated. Remaining gap: byte-granular patch LDS + 64-way STG scatter (TRT=2). Next: wide LDG/cp.async B-stage + vectorized STG |
 | v57 | active | `v57 = 0.0225 ms`, err=1 (NEW BEST) | NHWC vectorized epilogue: STG 64->4 (STG.128); matches TRT vectorized output contract. REG48/8KB/240 IMMA. Remaining gap = input byte LDG (81) vs TRT 12 LDG.128, which is the input reformat (32ch pack) |
+| v58 | active | `v58 = 0.025 ms`, err=1 | input padded 3->4ch NHWC (LDG.32, smem8.8KB); halo misalignment blocks LDG.128, count stays 81, slightly slower than v57 (negative) |
 - a current best or reproducible comparison target,
 - the first implementation of a new strategy,
 - a decisive negative result that changes the optimization direction,
