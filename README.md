@@ -67,12 +67,7 @@ more scalar-DP4A tuning.
 
 ## Current Standing
 
-Best **correct** hand-written CUDA kernel: `bench_resnet_stem_v72`, about `0.0106 ms`, `max_abs_err=0` — at/under TensorRT fused core (~0.0108 ms) with bit-exact output. Untimed im2col pack + fused cp.async 3-stage K-stream + parallel pool epilogue + 14x9 halo conv tile per pool block. `v71` (0.0109 ms) is the lean variant: identical correctness, SHARED 9KB (≈TRT). v67/v68's `0.0093 ms` were faster only because their conv-block grid dropped pool-edge halos (160/200704 cells off by ±1, err=1) — a real coverage bug; the halo tile (v69→v71→v72) is the honest correct best.
-`0.0172 ms`, `max_abs_err=2` (integer-shift quant vs TRT float, like v57). This
-is about 1.6x slower than TensorRT's fused core (`~0.0108 ms`). It follows TRT's
-split: an untimed im2col-pack "input reformat", a timed fused conv-act-pool
-kernel that cp.async double-buffers K, and an untimed output reformat. Previous
-best `bench_resnet_stem_v38` was `0.0183 ms`, `max_abs_err=0`.
+Best **correct** hand-written CUDA kernel: `bench_resnet_stem_v72`, about `0.0106 ms`, `max_abs_err=0` — at/under TensorRT fused core (~0.0108 ms) with bit-exact output. Untimed im2col pack + fused cp.async 3-stage K-stream + parallel pool epilogue + 14x9 halo conv tile per pool block. `v71` (0.0109 ms) is the lean variant: identical correctness, SHARED 9KB (≈TRT). v67/v68's `0.0093 ms` were faster only because their conv-block grid dropped pool-edge halos (160/200704 cells off by ±1, err=1) — a real coverage bug; the halo tile (v69→v71→v72) is the honest correct best. Previous fully-correct milestones: `v38` at `0.0183 ms`, `v57` at `0.0225 ms`.
 
 Best generic-library comparison: `bench_resnet_stem_v44` with CUTLASS 4.6 INT8
 implicit-GEMM conv is slower here (`0.0685 ms` conv only, `0.0877 ms` conv+pool).
@@ -101,6 +96,45 @@ The remaining gap is architectural, not a simple parameter issue:
 - `src/legacy/bench_resnet_stem_v*.cu`: archived versions that were mainly
   parameter sweeps, superseded intermediate experiments, or low-signal
   regressions. They are kept for reference but are not built by default.
+
+## Optimization Evolution
+
+The whole project is one ~70-step descent from a naive DP4A tiler to a kernel
+that matches TensorRT's fused `CaskConvActPool`. The path, front to back:
+
+1. **DP4A direct tiling (v2–v8, 0.123→0.031 ms).** Prepack weights, fuse
+   conv+ReLU+pool into one kernel, walk tile/OC/block sizes. `v8` (OC8, 8x8,
+   block 128) is the DP4A ceiling — instruction throughput, not memory, caps it.
+2. **Inline-PTX INT8 MMA (v12–v24, 0.056→0.024 ms).** Switch DP4A→`mma.m16n8k32`.
+   Wins come from reusing one B tile across all 64 OC (`v15`), dual-N scheduling
+   (`v17`), and **packed A/B operands** (`v20`) — the first MMA path to beat DP4A.
+   `v24` is the refactored packed baseline on the shared harness.
+3. **OC64 slab + register pool (v31–v38, 0.025→0.0183 ms).** One CTA owns the full
+   64-OC slab (TRT-style weight reuse), int16 raw-accumulate pool, wide tile.
+   `v38` = best fully-correct single kernel of this era at 0.0183 ms; plateau hit.
+4. **SASS-reverse / instruction-count match (v45–v57).** Read TRT SASS, target 240
+   IMMA, REG~128, ~9KB smem, 2 STG. `v45` is a literal 8x7 replica (correct but
+   smem-bound). `v48/v50` hit 240 IMMA; `v54/v55` reach TRT-class resources
+   (8KB/REG48); `v57` adds the NHWC vectorized STG.128 epilogue → 0.0225 ms. The
+   wall is now input byte-LDG (81) vs TRT's 12 LDG.128, i.e. the reformat layout.
+5. **TRT-style reformat split + K-stream (v64–v66, ~0.017 ms).** Mirror TRT: an
+   untimed im2col-pack input reformat feeds a fused kernel that cp.async-streams 5
+   K32 chunks; untimed NHWC→NCHW output reformat. Beats the long-standing 0.018
+   plateau but stalls at 0.017 — `v66` proves it's *not* occupancy: smem 12→6KB
+   changes nothing.
+6. **Parallel pool epilogue — the real wall (v67/v68, 0.0093 ms).** The 0.017
+   plateau was a *serial* pool epilogue (~15 live threads). Fanning pool over
+   PB*4 quad-tasks drops LDS 51→24, STG→1. Fast but **buggy**: conv-block tiling
+   omits the pool halo (160 cells ±1).
+7. **Halo coverage + tuning (v69–v72, 0.0114→0.0106 ms, err=0).** Pool-block grid
+   with a halo conv tile makes it bit-exact; minimal 13–14-wide tile, 4 warps, and
+   a 3-stage cp.async pipeline buy the overhead back. **v72 = 0.0106 ms, err=0**,
+   at/under TRT core. This is the current frontier.
+
+Recurring lessons: weight reuse and IMMA density beat raw memory tricks; matching
+TRT's instruction counts is necessary but the epilogue parallelism and reformat
+split were the decisive levers; and a fast kernel is worthless until edge
+coverage is proven (err=0).
 
 ## Version Summary
 
@@ -235,9 +269,71 @@ occupancy matters). Lesson: 4 warps + minimal halo + deeper prefetch beats wide
 tiles; correctness and TRT-parity are simultaneously achievable.
 
 
-## Notes
+## Best implementation deep dive (v72)
 
-- Target GPU: RTX 3080 Ti (`sm_86`).
+`v72` is correct (`err=0`) and at/under TRT core (~0.0106 ms). It reproduces TRT's
+three-kernel decomposition: two cheap, **untimed** reformat kernels around one
+timed fused conv+ReLU+pool kernel. Shapes: input `3x224x224 int8`, conv `7x7 s2`
+→ `64x112x112`, pool `3x3 s2` → `64x56x56`. K is padded to `K_TOTAL=147` (3·49)
+→ `K_GROUPS_MMA=40` int8x4 groups = 5 K32 chunks.
+
+### End-to-end data flow
+
+```text
+        x[3,224,224] int8 (NCHW)
+                │
+   ┌────────────▼─────────────┐  pack_input<<<112*112, 40>>>   (untimed reformat 1)
+   │  im2col + 7x7 halo gather │  each conv-pt -> 40 packed int8x4 groups
+   └────────────┬─────────────┘
+        b[conv_pt, 40] int8x4  (DRAM, contiguous → LDG.128)
+                │
+   ┌────────────▼───────────────────────────────────────────────┐
+   │  v72_kernel<<<140 blocks, 128 thr (4 warps)>>>  (TIMED fused) │
+   │                                                              │
+   │  block = one 6x4 pool tile; stages a 14x9 conv halo tile     │
+   │                                                              │
+   │   for ch in 0..4 (5 K32 chunks):                             │
+   │     cp.async.cg 16B  b → bb[3][NPAD*8]   (3-stage prefetch)  │
+   │     wait_group 1; BAR; mma.m16n8k32.s8 ×(3 NG·4 OCG)=240 IMMA│
+   │                       acc[ng][oc][4] int32                   │
+   │   epilogue: clamp_relu_i8(acc>>9) → cr_s[14x9, 64ch] int8    │
+   │   pool: 96 quad-tasks, vmax4.s8 over 3x3 → STG.128 ×2 → y    │
+   └────────────┬───────────────────────────────────────────────┘
+        y[pool_pt,64] int8 (NHWC)
+                │
+   ┌────────────▼─────────────┐  reformat 2 (untimed): NHWC → NCHW
+   └────────────┬─────────────┘
+        out[64,56,56] int8 (NCHW)
+```
+
+### Inside the timed kernel
+
+- **Grid = pool-block.** 140 blocks, each owns a `PB=6x4` output pool tile and
+  stages the `14x9` conv tile that feeds it (1-col/1-row halo, OOB lanes zeroed).
+  Halo overlap is the price of bit-exact edges; minimal tile + 4 warps keep it
+  cheap.
+- **K-stream mainloop.** 4 warps cooperatively `cp.async.cg` 16B B-fragments into
+  a triple-buffer `bb[3]`. `wait_group 1` keeps 2 chunks in flight; one BAR/chunk.
+  Each warp issues 3 NG × 4 OCG `mma.m16n8k32.s8` ⇒ **240 IMMA/CTA**, matching TRT.
+- **Weights** are prepacked (`pack_weights_mma4`) so A-fragments are direct loads.
+- **Parallel pool epilogue** (the decisive lever): accumulators are clamped/ReLU'd
+  into `cr_s`, then 96 quad-tasks run `vmax4.s8` over the 3x3 window and write the
+  64-channel result as 2 `STG.128` — vs the old 15-thread serial pool (LDS 51→24).
+
+```text
+  conv-pt s = cy*14 + cx   in cr_s[126, 64ch]
+        ┌─ 3x3 max ─┐  best[4] = vmax4.s8(window)   per pool-pt q
+        └────────────┘  →  uint4 STG.128 ×2  →  64 channels NHWC
+```
+
+### SASS vs TRT
+
+240 IMMA, STG2 (match), LDG/LDS in family, BAR6, REG106. v72 trades smem high
+(20KB, 3-stage) for speed; **v71** is the lean twin (9KB ≈ TRT 9008B, 0.0109 ms)
+when occupancy matters. The pack/reformat layers carry the byte-granular I/O TRT
+also offloads, so the fused core stays vectorized.
+
+
 - CUDA: `/usr/local/cuda-11.8`.
 - TensorRT: `tensorrt-cu11==10.10.0.31` via pip on the remote machine.
 - SASS extraction is reproducible with `scripts/extract_engine_fatbin.py`
