@@ -157,6 +157,7 @@ The remaining gap is architectural, not a simple parameter issue:
 | v62 | active | `v62 = 0.0249 ms` | 12 warps/CTA; fewer CTAs/SM, regressed. 6-warp (v57) optimal across 4/6/12 sweep. v57=0.0225 is floor for this design |
 | v63 | active | `v63 = 0.0251 ms`, err=1 | small-N 5x7 tile (smem3.5KB) needs CB>=PB*2+1 for pool halo; halo overlap recompute negates occupancy gain. Confirms 8x12 (v57) optimal halo-vs-reuse |
 | v64 | active | `v64_kstream = 0.0172 ms`, err=2 (NEW BEST) | TRT-exact K-stream: separate untimed im2col pack reformat -> fused kernel cp.async double-buffers 5 K-chunks, 4 warps x 3NG x 4OCG=240 IMMA, REG67/12KB, register vmax4 pool, 4 STG.128. Beats v38 0.0183; pack split mirrors TRT reformat layers |
+| v65 | active | `v65_kstream3 = 0.0170 ms`, err=2 (BEST) | 3-stage cp.async pipeline (wait_group 1) cuts BAR 9->6 toward TRT 3; REG72/15KB. ~1.58x TRT core. Gap is occupancy/tile not algorithm |
 - a current best or reproducible comparison target,
 - the first implementation of a new strategy,
 - a decisive negative result that changes the optimization direction,
