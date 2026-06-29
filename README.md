@@ -119,6 +119,11 @@ Latest optimization results:
 | v22 | `ptx_mma_oc32_dual_n_accum_pool_4x4 = 0.034310 ms` | accumulator-path ReLU/MaxPool with shared atomics was correct but too slow |
 | v23 | `ptx_mma_oc32_pool_owner_w4_b128 = 0.511420 ms` | pool-output owner without batching wastes 7/8 MMA N columns and is not viable |
 | v24 | `ptx_mma_oc32_dual_n_packed_ab_4x4_w8_b256 = 0.023772 ms` | refactored latest packed A/B MMA kernel; interior fast path plus block/warp sweep |
+| v25–v29 | accumulator/pool-owner sweeps, ~0.024–0.51 ms | static-N expand, parallel/register pool, pool-owner 8N — all regressed |
+| v30 | `ptx_mma_oc32_raw_acc_pool = ~0.025 ms` | pool on int32 raw accumulators, ReLU/quant once |
+| v31 | `ptx_mma_oc32_raw_acc16_pool_4x4 = ~0.021–0.025 ms` | pool on int16 raw accumulators; prior best |
+| v32–v34 | group4/8/16 pool sweeps, ~0.023–0.046 ms | OC-group epilogue tuning, no gain over v31 |
+| v35 | `ptx_mma_oc64_raw_acc16_pool_4x4_w4_b256 = ~0.0196 ms` | **current best**; one CTA owns full 64-OC slab (TRT-style weight reuse) + int16 raw-acc pool; ~1.8x TRT core |
 
 The v4 result shows that tensor-core INT8 convolution is necessary to approach
 TensorRT. It also shows why plain GEMM is not enough: materializing the full

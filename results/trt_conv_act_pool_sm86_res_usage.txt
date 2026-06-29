@@ -1,0 +1,24 @@
+
+Fatbin elf code:
+================
+arch = sm_86
+code version = [1,7]
+host = linux
+compile_size = 64bit
+compressed
+
+Resource usage:
+ Common:
+  GLOBAL:0
+ Function sm80_trt_conv_act_pool_v3_tile_rows_8_tile_cols_120_execute_kernel_trt:
+  REG:128 STACK:0 SHARED:9008 LOCAL:0 CONSTANT[0]:424 TEXTURE:0 SURFACE:0 SAMPLER:0
+
+Fatbin ptx code:
+================
+arch = sm_86
+code version = [7,8]
+host = linux
+compile_size = 64bit
+compressed
+ptxasOptions =   -uumn
+cuobjdump fatal   : Invalid fatbin header in 'results/engine_elf/engine_fatbin.bin'

@@ -1,0 +1,74 @@
+# TRT `CaskConvActPool` Kernel: Deep SASS Re-analysis & Reproduction Schemes
+
+Date: 2026-06-29 · GPU RTX 3080 Ti (sm_86) · CUDA 11.8 · TensorRT 10.10
+
+Kernel: `sm80_trt_conv_act_pool_v3_tile_rows_8_tile_cols_120_execute_kernel_trt`.
+Core layer ≈ `0.0108 ms`. This file augments
+[tensorrt_fused_core_profile.md](tensorrt_fused_core_profile.md) and
+[trt_kernel_gap_plan.md](trt_kernel_gap_plan.md) with a fresh disassembly of
+[../results/trt_conv_act_pool_sm86.sass](../results/trt_conv_act_pool_sm86.sass).
+
+## 1. Verified resource & instruction mix
+
+REG 128 · SHARED 9008 B · LOCAL/STACK 0 · CONST[0] 424 B.
+
+| family | count | note |
+|---|---:|---|
+| `IMMA.16816.S8.S8` | 240 | Ampere INT8 tensorcore, m16 n8 k16, `ROW`×`COL`, RZ-seeded then chained |
+| `DP4A`/`HMMA` | 0 | pure IMMA path |
+| `LDG.E.128` | 12 | wide weight/activation loads |
+| `LDG.E.64` | 26 | weight bias/scale + activation loads |
+| `STS.128`/`STS.64` | 9/11 | stage packed fragments to smem |
+| `LDS`/`LDS.64` | 48/2 | feed MMA operands |
+| `STG.E.64` | 2 | only final 64×56×56 pooled output, tiny footprint |
+| `I2FP.F32.S32` | 80 | dequant: acc int32 → f32 |
+| `FFMA.FTZ` | 80 | scale·acc + bias |
+| `F2IP.S8.F32.NTZ.RELU` | 40 | **pool-max + ReLU + int8 quant fused in one op** |
+| `BAR.SYNC` | 3 | single staged mainloop, two reorg barriers |
+
+## 2. Decoded structure
+
+Prologue (`0x000–0x370`): tid decode, packed weight load via 8×`LDG.E.64`, 12×
+`LDG.E.128` activation/weight tiles into registers (R6 = activation base, R8 =
+weight base from `c[0x0][0x180]`). CTAID.X/Y/Z select the 8×120 output tile and
+OC slab; a `@!P0 BRA` splits a fast interior path from a bordered path.
+
+Mainloop (`~0x2310+`): one long straight-line IMMA region. Operands stay in
+registers and are reused (`R88.reuse.ROW`, etc.); accumulators R20/R52/R56/R88…
+seed from `RZ` then chain. 240 IMMA = 10 K-groups (147→160 ipw, k16) ×
+24 (M,N) frags covering tile_rows_8 OC rows over the 120 conv columns. No
+`LDSM`; operands are byte-packed in registers, fed by wide LDG.
+
+Epilogue: per accumulator `I2FP` → `FFMA.FTZ`(scale,bias) → then **pool fold**:
+`F2IP.S8.F32.NTZ.RELU Rd, Ra, Rb, Rc` quantizes max(Ra,Rb) with ReLU and chains
+the running pool max in `Rc`. 40 F2IP chain the 3×3 conv outputs per pooled pixel
+to int8. Only 2 `STG.E.64` — writes pooled output directly, never the 64×112×112.
+
+## 3. Key reproduction principles
+
+1. Fuse `ReLU(MaxPool(conv))`; never materialize conv. Chain pool-max into the
+   int8 quant (mimics F2IP) so dequant happens once, pool is on f32 candidates.
+2. Wide tile: 8 OC-rows × 120 conv-cols/CTA, sized so each weight fragment
+   feeds many conv points → straight-line IMMA, high reuse, ~240 MMA/CTA.
+3. K padded to 160, packed int8x4, fed from registers/smem; wide LDG.128/64.
+4. Single shared stage + ≤3 barriers; no atomics, ≤2 STG of pooled output.
+
+## 4. Candidate schemes (ranked)
+
+- **S1 (chosen, v35):** OC32 packed-A/B PTX `mma.m16n8k32`, 4×4 pool tile,
+  pool-max chained on accumulators before single shift+ReLU+clamp store.
+  Extends v24/v34; lowest risk to err=0. Target < 0.020 ms.
+- **S2:** widen N to ~120 conv-cols/CTA with cp.async double-buffer; closer to
+  TRT but high register/smem risk on sm_86.
+- **S3:** mma.sync wide-OC (64) single-pass + register pool; matches F2IP folding
+  but pressure heavy. Future after S1 validated.
+
+Validation: `max_abs_err=0` vs baseline; compare to v24 `0.0238` / v34 `0.0229`.
+
+## 5. v35 result
+
+`bench_resnet_stem_v35.cu` implements S1 with one CTA owning the full 64-OC slab
+(`OC_GROUPS=4`) for TRT-style weight reuse + int16 raw-acc pool, single store.
+Measured RTX 3080 Ti: `oc64_raw_acc16_pool_4x4_w4_b256 ≈ 0.0196 ms`, err=0 —
+best custom kernel, ~1.8× the TRT core (`0.0108`). 6x6 tile regresses (smem
+pressure). Next: cp.async double-buffer + widen N toward 120 (S2).
