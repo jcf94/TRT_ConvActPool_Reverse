@@ -134,3 +134,11 @@ limited by per-CTA MMA schedule (40 IMMA + overhead), not by pool reads. Closing
 to TRT 0.0108 needs the full implicit-GEMM rewrite: 8×120 tile, 240 straight-line
 IMMA, 128 reg, cp.async, F2IP register pool — a CUTLASS-scale kernel. Plateau
 best ~0.018 ms ≈ 1.7× TRT; v36/v39 are instructive regressions.
+
+## 11. v40 — 4-N/warp straight-line (regressed)
+
+Hoisting A reuse to 4 N-pairs/warp pushed acc to 64 regs and idled 5/8 warps at
+4x4 → 0.029 ms. Sixth distinct scheme to plateau/regress (v31/35/37/38 ≈0.018;
+v36/39/40 worse). Verdict: this packed-MMA+shared family is exhausted at ~0.018;
+TRT parity needs a ground-up implicit-GEMM kernel (8×120, 240 straight IMMA, 128
+reg, cp.async pipeline, register F2IP pool). Best stable: **v38 ≈ 0.0183 ms**.
