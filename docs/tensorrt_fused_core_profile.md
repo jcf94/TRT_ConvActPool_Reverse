@@ -413,3 +413,23 @@ output staging, not input. Input is tiny => not the bottleneck. v58's 4ch pad
 matches TRT's input format. Output reformat Int8->Int8 = core writes packed
 (CHW32) then unpack. v57 vectorized output already matches that contract. The
 remaining ~2x perf gap is the mainloop schedule/pipelining, not I/O width.
+
+## Schedule Parity Analysis (2026-06-29, v59/v60)
+
+TRT core SASS: 240 STATIC IMMA, STS=20, smem=9KB, REG=128, LDS=50, STG=2. We can
+hit any 3 traits but the 4th regresses:
+
+| trait | TRT | v57 | v59 | v60 |
+| --- | --- | --- | --- | --- |
+| static IMMA | 240 | 20(loop) | 240 | 240 |
+| STG | 2 | 4 | 4 | 4 |
+| reg | 128 | 48 | 116 | 231 |
+| smem | 9KB | 8KB | 21KB | 8KB |
+| STS | 20 | 17 | 193 | 193 |
+| time | 0.0108 | 0.0225 | 0.0251 | 0.0348 |
+
+Tension: 240-static+STS20+9KB+128reg together needs TRT's trick = compact packed-B
+staged once per K-block + K streamed/double-buffered (cp.async) so one warp keeps
+240 IMMA hot with tiny smem/STS. Byte register-rebuild (v60) spills; full b4 stage
+(v59) blows smem/STS. v57 best perf (looped), v59 best instr-shape. Next: cp.async
+double-buffer a small packed-B tile to unroll 240 IMMA at <10KB without STS blowup.
