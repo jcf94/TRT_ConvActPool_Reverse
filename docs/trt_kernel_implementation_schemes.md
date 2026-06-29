@@ -72,3 +72,18 @@ Validation: `max_abs_err=0` vs baseline; compare to v24 `0.0238` / v34 `0.0229`.
 Measured RTX 3080 Ti: `oc64_raw_acc16_pool_4x4_w4_b256 ≈ 0.0196 ms`, err=0 —
 best custom kernel, ~1.8× the TRT core (`0.0108`). 6x6 tile regresses (smem
 pressure). Next: cp.async double-buffer + widen N toward 120 (S2).
+
+## 6. v35 SASS vs TRT — remaining gaps
+
+| metric | TRT core | v35 oc64 4x4 | gap driver |
+|---|---:|---:|---|
+| REG | 128 | 78 | v35 leaves ILP/work on table |
+| IMMA/CTA | 240 | ~40 | TRT 8×120 tile, straight-line; v35 small tile |
+| LDG.128/64 | 12/26 | 0/0 | **v35 byte-only loads (88× LDG.E)** |
+| LDS/STS | 50/20 | ~251/~34 | **v35 restages conv-acc in smem, pools by re-read** |
+| store | 2 STG | direct | ok |
+
+v36 plan: (1) vectorize input/weight loads to `LDG.128/64`; (2) pool in registers
+via warp shuffle instead of int16 smem tile — drop one smem buffer + barrier,
+mimic F2IP max chain; (3) more work/thread to lift REG→~128 & IMMA/CTA; then
+widen N toward 120 with cp.async double-buffer (S2).
