@@ -1,5 +1,7 @@
 # TensorRT ConvActPool Reverse
 
+> Refer to https://zhuanlan.zhihu.com/p/2053985213001234199
+
 This repository reverse-engineers and reproduces TensorRT's INT8
 `ConvActPool` fusion for the ResNet stem. The CUDA benchmark harness is used to
 iterate on hand-written kernels, compare them with TensorRT's fused
