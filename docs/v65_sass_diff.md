@@ -46,3 +46,16 @@ v67 spreads pool over PB_H*PB_W*4=60 tasks (one quad/thread), best[4] not best[1
 LDS 51->24, STG 1, REG80. Time 0.0170->0.0094 ms < TRT 0.0108. 12+ prior versions
 mis-attributed the wall to MMA/tile; it was epilogue parallelism. KEY: keep cp.async
 K-stream + 240 IMMA AND fan the pool across all warps. err=2 (int shift vs TRT float).
+
+## v68 correctness audit + v69 halo fix — CORRECT BEST (0.0114ms, err=0)
+DEFINITIVE: dumped both outputs vs CPU reference. v67/v68 use a CONV-BLOCK grid
+(8x12 conv tile = exactly 6x4 pool, no halo). Pool 3x3 s2 needs 1-col/1-row
+overlap, so each block lost its right/bottom pool edge: 160/200704 cells off by
+±1 (maxd=1). This is a real coverage bug, NOT integer-shift rounding — proven by
+v69 reaching err=0 with identical quant. v68's 0.0093ms was fast only because it
+skipped that edge work.
+v69: POOL-BLOCK grid; each block owns PB6x4 pool and stages a 14x10 halo conv tile
+(bx=gx0*2-1) with OOB lanes ZEROED (not copied). 240 IMMA preserved, REG80,
+SHARED 9216B(~TRT 9008), STG2(match), BAR5. err=0, 0.0114ms (~1.05x TRT core).
+The price of bit-exact edges is halo overlap (~140 blocks). Correctness > speed:
+v69 is the new standing best.

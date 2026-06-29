@@ -67,7 +67,7 @@ more scalar-DP4A tuning.
 
 ## Current Standing
 
-Best reproducible hand-written CUDA kernel: `bench_resnet_stem_v68`, about `0.0093 ms`, err=2 — faster than TensorRT fused core (~0.0108 ms). Untimed im2col pack + fused cp.async K-stream + parallel pool epilogue.
+Best **correct** hand-written CUDA kernel: `bench_resnet_stem_v69`, about `0.0114 ms`, `max_abs_err=0` — TRT-parity (~0.0108 ms) with bit-exact output. Untimed im2col pack + fused cp.async K-stream + parallel pool epilogue + halo conv tile (14x10) per pool block for full edge coverage. v67/v68's `0.0093 ms` were FASTER ONLY BECAUSE the conv-block grid dropped pool-edge halos: v68 has 160/200704 cells off by ±1 (err=1) — a real coverage bug, not rounding. v69 fixes it (err=0) at the cost of halo overlap; it is the honest best.
 `0.0172 ms`, `max_abs_err=2` (integer-shift quant vs TRT float, like v57). This
 is about 1.6x slower than TensorRT's fused core (`~0.0108 ms`). It follows TRT's
 split: an untimed im2col-pack "input reformat", a timed fused conv-act-pool
@@ -160,7 +160,8 @@ The remaining gap is architectural, not a simple parameter issue:
 | v65 | active | `v65_kstream3 = 0.0170 ms`, err=2 (BEST) | 3-stage cp.async pipeline (wait_group 1) cuts BAR 9->6 toward TRT 3; REG72/15KB. ~1.58x TRT core. Gap is occupancy/tile not algorithm |
 | v66 | active | `v66_union = 0.0172 ms`, err=2 | alias cr onto bb -> smem 12->6KB, time unchanged: NOT occupancy bound, ~0.017 is epilogue/schedule wall (negative) |
 | v67 | active | `v67_par_pool = 0.0094 ms`, err=2 (BEST, BEATS TRT 0.0108) | parallel pool: 60 tasks (PB*4) vs serial 15 -> LDS51->24,STG1; cp.async K-stream + 240 IMMA + fanned pool. The ~0.017 plateau was epilogue serialization, not MMA |
-| v68 | active | `v68_alias_par = 0.0093 ms`, err=2 (BEST) | v67 + 2-stage + cr/bb smem alias -> smem 6KB, REG80; ~14% faster than TRT core. Beating TRT confirmed reproducible |
+| v68 | active | `v68_alias_par = 0.0093 ms`, err=1 (BUGGY) | conv-block grid drops pool-edge halos: 160/200704 cells off by ±1 (real coverage bug). Fast only due to dropped edge work. Superseded by v69 |
+| v69 | active | `v69_halo = 0.0114 ms`, **err=0** (CORRECT BEST) | pool-block grid + 14x10 halo conv tile (1-col/1-row overlap), PB6x4, 6 warps x 3NG x 4OCG=240 IMMA, REG80, SHARED 9216B (~TRT 9008), STG2 (match), BAR5. cp.async 2-stage + parallel pool. Bit-exact, ~1.05x TRT core. Halo overlap is the price of correct edge coverage |
 - a current best or reproducible comparison target,
 - the first implementation of a new strategy,
 - a decisive negative result that changes the optimization direction,

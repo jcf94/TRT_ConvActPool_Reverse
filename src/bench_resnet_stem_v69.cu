@@ -7,11 +7,11 @@ namespace {
 // contiguous packed activations [conv_pt][K_GROUPS] so the timed fused kernel
 // reads wide LDG.128 and cp.async-streams K, exactly like TRT. Only the fused
 // kernel is timed/compared. Output is pooled NHWC, reformatted to NCHW untimed.
-constexpr int CB_H = 8, CB_W = 12, N_TILE = CB_H * CB_W, NG = N_TILE / 8, OCG = 4;
-constexpr int PB_H = 3, PB_W = 5;
+constexpr int CB_H = 10, CB_W = 14, N_TILE = CB_H * CB_W, NPAD = 144, NG = NPAD / 8, OCG = 4;
+constexpr int PB_H = 4, PB_W = 6;
 constexpr int KC = 8;                          // kg per k32 chunk
 constexpr int NCH = K_GROUPS_MMA / KC;         // 5 chunks
-constexpr int WARPS = 4, NG_PW = NG / WARPS;   // 3 ng/warp -> 240 IMMA total
+constexpr int WARPS = 6, NG_PW = NG / WARPS;   // 3 ng/warp -> 240 IMMA total
 constexpr int NPTS = CONV_OH * CONV_OW;
 
 __device__ __forceinline__ uint32_t vmax_s8x4(uint32_t a, uint32_t b) {
@@ -34,26 +34,22 @@ __global__ void pack_input(const int8_t* __restrict__ x, uint32_t* __restrict__ 
   }
 }
 
-__global__ void v67_kernel(const uint32_t* __restrict__ b, const uint32_t* __restrict__ w,
+__global__ void v69_kernel(const uint32_t* __restrict__ b, const uint32_t* __restrict__ w,
                            int8_t* __restrict__ y, int shift) {
-  constexpr int ST = 3;
-  __shared__ uint32_t bb[ST][N_TILE * KC];
-  __shared__ uint32_t cr[N_TILE * 16];
+  constexpr int ST = 2;
+  __shared__ uint32_t bb[2][NPAD * KC];
+  uint32_t* cr = &bb[0][0];
   constexpr int GX=(POOL_OW+PB_W-1)/PB_W; int gx0=(blockIdx.x%GX)*PB_W, gy0=blockIdx.x/GX*PB_H; int bx=gx0*2-1, by=gy0*2-1;
   int tid = threadIdx.x, lid = tid & 31, gid = lid >> 2, lig = lid & 3, warp = tid >> 5;
   int32_t acc[NG_PW][OCG][4] = {};
   // 3-stage cp.async pipeline: prefetch 2 chunks ahead, wait_group(1), 1 BAR/chunk
   for (int s = 0; s < ST - 1; ++s) {
-    for (int i = tid; i < N_TILE * 2; i += blockDim.x) { int n = i >> 1, h = i & 1;
-      int gn = (by + n / CB_W) * CONV_OW + (bx + n % CB_W);
-      cpasync16((uint32_t)__cvta_generic_to_shared(&bb[s][n*KC+h*4]), &b[gn * K_GROUPS_MMA + s * KC + h * 4]); }
+    for (int i = tid; i < NPAD * 2; i += blockDim.x) { int n = i >> 1, h = i & 1; bool ok_=n<N_TILE&&(by+n/CB_W)>=0&&(by+n/CB_W)<CONV_OH&&(bx+n%CB_W)>=0&&(bx+n%CB_W)<CONV_OW; int gn=ok_?(by+n/CB_W)*CONV_OW+(bx+n%CB_W):0; if(ok_)cpasync16((uint32_t)__cvta_generic_to_shared(&bb[s][n*KC+h*4]), &b[gn * K_GROUPS_MMA + s * KC + h * 4]); else{bb[s][n*KC+h*4]=0;bb[s][n*KC+h*4+1]=0;bb[s][n*KC+h*4+2]=0;bb[s][n*KC+h*4+3]=0;} }
     asm volatile("cp.async.commit_group;\n" ::);
   }
   for (int ch = 0; ch < NCH; ++ch) { int cur = ch % ST, nx = ch + ST - 1;
     if (nx < NCH) { int wb = nx % ST;
-      for (int i = tid; i < N_TILE * 2; i += blockDim.x) { int n = i >> 1, h = i & 1;
-        int gn = (by + n / CB_W) * CONV_OW + (bx + n % CB_W);
-        cpasync16((uint32_t)__cvta_generic_to_shared(&bb[wb][n*KC+h*4]), &b[gn * K_GROUPS_MMA + nx * KC + h * 4]); }
+      for (int i = tid; i < NPAD * 2; i += blockDim.x) { int n = i >> 1, h = i & 1; bool ok_=n<N_TILE&&(by+n/CB_W)>=0&&(by+n/CB_W)<CONV_OH&&(bx+n%CB_W)>=0&&(bx+n%CB_W)<CONV_OW; int gn=ok_?(by+n/CB_W)*CONV_OW+(bx+n%CB_W):0; if(ok_)cpasync16((uint32_t)__cvta_generic_to_shared(&bb[wb][n*KC+h*4]), &b[gn * K_GROUPS_MMA + nx * KC + h * 4]); else{bb[wb][n*KC+h*4]=0;bb[wb][n*KC+h*4+1]=0;bb[wb][n*KC+h*4+2]=0;bb[wb][n*KC+h*4+3]=0;} }
       asm volatile("cp.async.commit_group;\n" ::); }
     asm volatile("cp.async.wait_group 1;\n" ::); __syncthreads();
 #pragma unroll
@@ -106,8 +102,8 @@ int main(int argc, char** argv) {
   CUDA_CHECK(cudaMemcpy(dw,hw4.data(),hw4.size()*4,cudaMemcpyHostToDevice));
   pack_input<<<NPTS,40>>>(dx,db);  // untimed input reformat
   dim3 g(((POOL_OW+PB_W-1)/PB_W)*((POOL_OH+PB_H-1)/PB_H),1,1);
-  float ms=time_kernel([&]{v67_kernel<<<g,WARPS*32>>>(db,dw,dy,sh);},a.warmup,a.iters);
+  float ms=time_kernel([&]{v69_kernel<<<g,WARPS*32>>>(db,dw,dy,sh);},a.warmup,a.iters);
   CUDA_CHECK(cudaMemcpy(hy.data(),dy,hy.size(),cudaMemcpyDeviceToHost));
-  print_result(a,"v67_par_pool",ms,max_abs_err(hr_n,hy));
+  print_result(a,"v69_halo",ms,max_abs_err(hr_n,hy));
   CUDA_CHECK(cudaFree(dx));CUDA_CHECK(cudaFree(dy));CUDA_CHECK(cudaFree(dw));CUDA_CHECK(cudaFree(db)); return 0;
 }

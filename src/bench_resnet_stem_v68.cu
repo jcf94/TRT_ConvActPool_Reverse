@@ -39,7 +39,7 @@ __global__ void v68_kernel(const uint32_t* __restrict__ b, const uint32_t* __res
   constexpr int ST = 2;
   __shared__ uint32_t bb[2][N_TILE * KC];
   uint32_t* cr = &bb[0][0];
-  constexpr int GX=(CONV_OW+CB_W-1)/CB_W; int bx=(blockIdx.x%GX)*CB_W, by=blockIdx.x/GX*CB_H;
+  constexpr int GX=(POOL_OW+PB_W-1)/PB_W; int gx0=(blockIdx.x%GX)*PB_W, gy0=blockIdx.x/GX*PB_H; int bx=gx0*2-1, by=gy0*2-1;
   int tid = threadIdx.x, lid = tid & 31, gid = lid >> 2, lig = lid & 3, warp = tid >> 5;
   int32_t acc[NG_PW][OCG][4] = {};
   // 3-stage cp.async pipeline: prefetch 2 chunks ahead, wait_group(1), 1 BAR/chunk
@@ -76,12 +76,12 @@ __global__ void v68_kernel(const uint32_t* __restrict__ b, const uint32_t* __res
         ((int8_t*)cr)[n * 64 + og * 16 + row] = clamp_relu_i8(acc[j][og][i], shift); } }
   __syncthreads();
   for (int t = tid; t < PB_H * PB_W * 4; t += blockDim.x) {
-    int o = t >> 2, q = t & 3, px = o % PB_W, py = o / PB_W, gx = bx / 2 + px, gy = by / 2 + py;
+    int o = t >> 2, q = t & 3, px = o % PB_W, py = o / PB_W, gx = gx0 + px, gy = gy0 + py;
     if (gx >= POOL_OW || gy >= POOL_OH) continue; uint32_t best[4] = {};
 #pragma unroll
     for (int ky = 0; ky < 3; ++ky)
 #pragma unroll
-      for (int kx = 0; kx < 3; ++kx) { int cx = px * 2 + kx - 1, cy = py * 2 + ky - 1;
+      for (int kx = 0; kx < 3; ++kx) { int cx = px * 2 + kx, cy = py * 2 + ky;
         if (cx < 0 || cx >= CB_W || cy < 0 || cy >= CB_H) continue; int s = cy * CB_W + cx;
 #pragma unroll
         for (int c = 0; c < 4; ++c) best[c] = vmax_s8x4(best[c], cr[s * 16 + q * 4 + c]); }
@@ -105,7 +105,7 @@ int main(int argc, char** argv) {
   CUDA_CHECK(cudaMemcpy(dx,hx.data(),hx.size(),cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemcpy(dw,hw4.data(),hw4.size()*4,cudaMemcpyHostToDevice));
   pack_input<<<NPTS,40>>>(dx,db);  // untimed input reformat
-  dim3 g(((CONV_OW+CB_W-1)/CB_W)*((CONV_OH+CB_H-1)/CB_H),1,1);
+  dim3 g(((POOL_OW+PB_W-1)/PB_W)*((POOL_OH+PB_H-1)/PB_H),1,1);
   float ms=time_kernel([&]{v68_kernel<<<g,WARPS*32>>>(db,dw,dy,sh);},a.warmup,a.iters);
   CUDA_CHECK(cudaMemcpy(hy.data(),dy,hy.size(),cudaMemcpyDeviceToHost));
   print_result(a,"v68_alias_par",ms,max_abs_err(hr_n,hy));
