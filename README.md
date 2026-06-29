@@ -134,11 +134,25 @@ The remaining gap is architectural, not a simple parameter issue:
 | v42 | active | `v42_implgemm_pc8 = 0.0214 ms` | implicit-GEMM strip cuts pool LDS but loses IMMA density |
 | v43 | active | `v43_8x8_reg64pool = 0.0378 ms` | 8-row tile plus large register pool spills/regresses |
 | v44 | active | `v44_cutlass_conv = 0.0685 ms`; `v44_cutlass_conv_pool = 0.0877 ms` | stock CUTLASS comparison, not competitive on this shape |
-
-## Source Retention Policy
-
-Keep a version in `src/` when it is one of:
-
+| v45 | active | `v45_trt_replica_8x7 = 0.0414 ms`, err=0 | direct SASS reverse: 8-row tile, IMMA mainloop, packed-byte register pool; correct but smem-bound, ~2.3x v38 (see `docs/trt_sass_reverse_v45.md`) |
+| v46 | active | `v46_t8 = 0.0418 ms`, err=0 | transposed [N][OC] pool + vmax4; strided MMA store regresses (negative) |
+| v47 | active | `v47_3x3 = 0.0218 ms`, err=0 | occupancy sweep, confirms ~0.0216 floor (negative) |
+| v48 | active | `v48_240imma_64x96 = 0.034 ms`, err=0 | first instruction-count match: 240 IMMA via 64OC x 96 conv-pts/CTA, K160; REG255 spills, no epilogue yet |
+| v49 | active | `v49_240imma_pool = 0.045 ms`, err=2 | 240 IMMA + I2FP dequant + 3x3 pool epilogue; float scale rounding vs int ref = err2; LDS/STG still high |## Source Retention Policy
+| v50 | active | `v50_240imma_pool = 0.0255 ms`, err=2 | 240 IMMA + REG116(no spill) + register pool, LDS696->156; err2 boundary (112%12); STS/STG still high |
+| v51 | active | `v51_240imma = 0.044 ms`, err=2 | halo-stepped 240-IMMA tile, REG114; more CTAs regressed vs v50; STS/STG still high |Keep a version in `src/` when it is one of:
+| v52 | active | `v52 = 0.080 ms`, err=1 | 2-warp/CTA dup smem 43KB -> 1 CTA/SM, regressed; smem is the occupancy wall (negative) |
+| v53 | active | `v53 = 0.080 ms` | 32-thread blocks; smem 21KB still caps CTAs, single-warp regressed (negative) |
+| v54 | active | `v54 = 0.046 ms`, err=1 | smem 21KB->8.1KB + REG231->48 (drop K unroll); TRT-class resources reached, but single warp/CTA computes so it stays compute-bound. Next: multi-warp split of N tiles to use freed occupancy |
+| v55 | active | `v55 = 0.0277 ms`, err=1 | 4 warps/CTA split 12 N-tiles, REG64/8KB; matches v50 perf with TRT-class resources (smem 21->8KB). 240 IMMA total |
+| v56 | active | `v56 = 0.0263 ms`, err=1 | 6 warps; marginal over v55 -> warp count saturated. Remaining gap: byte-granular patch LDS + 64-way STG scatter (TRT=2). Next: wide LDG/cp.async B-stage + vectorized STG |
+| v57 | active | `v57 = 0.0225 ms`, err=1 (NEW BEST) | NHWC vectorized epilogue: STG 64->4 (STG.128); matches TRT vectorized output contract. REG48/8KB/240 IMMA. Remaining gap = input byte LDG (81) vs TRT 12 LDG.128, which is the input reformat (32ch pack) |
+| v58 | active | `v58 = 0.025 ms`, err=1 | input padded 3->4ch NHWC (LDG.32, smem8.8KB); halo misalignment blocks LDG.128, count stays 81, slightly slower than v57 (negative) |
+| v59 | active | `v59 = 0.0251 ms`, err=2 | 240 STATIC IMMA + 4 STG.128 (v50 mainloop + vec out); SASS instr-shape matches TRT but STS193/smem21KB (b4 stage) |
+| v60 | active | `v60 = 0.0348 ms`, err=1 | 240 static + 8KB + 4 STG, but single-warp byte-rebuild -> LDS507/REG231 spill; conflicts (negative) |
+| v61 | active | `v61 = 0.045 ms`, err=2 | K-stream 2 chunks: smem 21->15KB but all-ng acc live -> REG255 spill (negative). Confirms TRT needs smaller N-tile for K-stream + reg trick |
+| v62 | active | `v62 = 0.0249 ms` | 12 warps/CTA; fewer CTAs/SM, regressed. 6-warp (v57) optimal across 4/6/12 sweep. v57=0.0225 is floor for this design |
+| v63 | active | `v63 = 0.0251 ms`, err=1 | small-N 5x7 tile (smem3.5KB) needs CB>=PB*2+1 for pool halo; halo overlap recompute negates occupancy gain. Confirms 8x12 (v57) optimal halo-vs-reuse |
 - a current best or reproducible comparison target,
 - the first implementation of a new strategy,
 - a decisive negative result that changes the optimization direction,

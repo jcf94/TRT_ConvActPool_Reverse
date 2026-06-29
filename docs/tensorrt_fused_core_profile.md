@@ -371,3 +371,75 @@ Next useful direction:
   warp owner mode is not viable because it wastes most tensor-core lanes.
 - Avoid larger spatial tiles with this shared-B design; v18 showed 5x5, 6x6,
   and 7x7 all regress.
+
+## Input/Output Reformat Analysis (2026-06-29)
+
+Engine timing shows two reformat kernels wrapping the core:
+
+```text
+Reformat input  -> 0.009117 ms
+core CaskConvActPool -> 0.010787 ms
+Reformat output -> 0.008159 ms
+```
+
+These are not overhead to ignore — they reveal the core's I/O contract. Core SASS:
+
+| op | width | count |
+| --- | --- | ---: |
+| LDG | .E.128 | 12 |
+| LDG | .E.64 | 26 |
+| STG | .E.64 | 2 |
+| STS | .128 | 9 |
+| STS | .64 | 11 |
+
+Zero byte loads/stores. The core only sees a 32-channel-packed (NC32HW32-style)
+layout: input is pre-padded 3->32ch so every LDG is 128/64-bit; output is written
+packed (8 int8/store) so only 2 STG. The reformats convert NCHW<->packed.
+
+Custom v56 (byte NCHW): 81 LDG.E.U8 + 64 STG.E.U8. THE remaining SASS gap is I/O
+width, not compute (240 IMMA already matched). Next: vectorize to NHWC/packed
+LDG.128 + STG.128 to collapse 81->~12 LDG and 64->4 STG.
+
+## Core I/O Tensor Reality (2026-06-29, EngineInspector)
+
+```text
+Reformat in : [1,3,224,224] Float -> [1,3,224,224] Int8
+Core        : [1,3,224,224] Int8  -> [1,64,56,56] Int8
+Reformat out: [1,64,56,56] Int8   -> [1,64,56,56] Int8
+```
+
+Core input is only 3ch int8 (CHW4-padded), NOT 32ch. So 12 LDG.128 are weights/
+output staging, not input. Input is tiny => not the bottleneck. v58's 4ch pad
+matches TRT's input format. Output reformat Int8->Int8 = core writes packed
+(CHW32) then unpack. v57 vectorized output already matches that contract. The
+remaining ~2x perf gap is the mainloop schedule/pipelining, not I/O width.
+
+## Schedule Parity Analysis (2026-06-29, v59/v60)
+
+TRT core SASS: 240 STATIC IMMA, STS=20, smem=9KB, REG=128, LDS=50, STG=2. We can
+hit any 3 traits but the 4th regresses:
+
+| trait | TRT | v57 | v59 | v60 |
+| --- | --- | --- | --- | --- |
+| static IMMA | 240 | 20(loop) | 240 | 240 |
+| STG | 2 | 4 | 4 | 4 |
+| reg | 128 | 48 | 116 | 231 |
+| smem | 9KB | 8KB | 21KB | 8KB |
+| STS | 20 | 17 | 193 | 193 |
+| time | 0.0108 | 0.0225 | 0.0251 | 0.0348 |
+
+Tension: 240-static+STS20+9KB+128reg together needs TRT's trick = compact packed-B
+staged once per K-block + K streamed/double-buffered (cp.async) so one warp keeps
+240 IMMA hot with tiny smem/STS. Byte register-rebuild (v60) spills; full b4 stage
+(v59) blows smem/STS. v57 best perf (looped), v59 best instr-shape. Next: cp.async
+double-buffer a small packed-B tile to unroll 240 IMMA at <10KB without STS blowup.
+
+v61: K-streaming with ng-outer requires all-ng acc resident (192 regs) -> spill,
+0.045ms. Lesson: K-stream + low-reg needs a SMALLER N tile so fewer accumulators
+stay live. TRT's tile_cols_120 wide but K likely held compact in 9KB. Next try:
+shrink N (CB 4x6=24pts, 60 IMMA) + K-stream + cp.async, many CTAs.
+
+v62/v63: warp sweep + small-N. 12-warp=0.0249, small-N 5x7=0.0251 (pool halo
+recompute overhead). v57 8x12 / 6-warp / 0.0225 ms is the design optimum. Tile
+must satisfy CB>=PB*2+1 for pool; smaller tiles lose halo coverage (err) or waste
+recompute. 0.0225 is the floor without TRT's exact K-stream pipeline.
