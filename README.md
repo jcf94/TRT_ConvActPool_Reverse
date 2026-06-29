@@ -119,6 +119,15 @@ Latest optimization results:
 | v22 | `ptx_mma_oc32_dual_n_accum_pool_4x4 = 0.034310 ms` | accumulator-path ReLU/MaxPool with shared atomics was correct but too slow |
 | v23 | `ptx_mma_oc32_pool_owner_w4_b128 = 0.511420 ms` | pool-output owner without batching wastes 7/8 MMA N columns and is not viable |
 | v24 | `ptx_mma_oc32_dual_n_packed_ab_4x4_w8_b256 = 0.023772 ms` | refactored latest packed A/B MMA kernel; interior fast path plus block/warp sweep |
+| v25–v29 | accumulator/pool-owner sweeps, ~0.024–0.51 ms | static-N expand, parallel/register pool, pool-owner 8N — all regressed |
+| v30 | `ptx_mma_oc32_raw_acc_pool = ~0.025 ms` | pool on int32 raw accumulators, ReLU/quant once |
+| v31 | `ptx_mma_oc32_raw_acc16_pool_4x4 = ~0.021–0.025 ms` | pool on int16 raw accumulators; prior best |
+| v32–v34 | group4/8/16 pool sweeps, ~0.023–0.046 ms | OC-group epilogue tuning, no gain over v31 |
+| v35 | `ptx_mma_oc64_raw_acc16_pool_4x4_w4_b256 = ~0.0196 ms` | one CTA owns full 64-OC slab (TRT-style weight reuse) + int16 raw-acc pool |
+| v36 | regressed ~0.029–0.032 ms | weights-in-shared & transposed acc both lose; bottleneck is occupancy, not loads |
+| v37 | `v37_oc64_wide_pool_4x4_b256 ≈ 0.019 ms` | dynamic smem; tied with v35, wide 7/8 tiles regress — **occupancy wall**: shared int16 conv-acc tile blocks parity; TRT pools in registers (F2IP), 9KB smem; gap ~1.8x |
+| v38 | `v38_oc64_i8pool_4x4_b256 ≈ 0.0183 ms` | **best (plateau)**; int8 pool tile, dynamic smem; ties v35/v37 — confirms not shared-size bound |
+| v39 | `≈ 0.021 ms` | [N][OC] tile cuts pool LDS 596→56 (=TRT) but slower: strided MMA stores dominate → pool LDS not the limiter; ~0.018 is a true plateau (1.7x TRT) |
 
 The v4 result shows that tensor-core INT8 convolution is necessary to approach
 TensorRT. It also shows why plain GEMM is not enough: materializing the full
@@ -286,3 +295,8 @@ Each optimization attempt lives in a separate source file:
   intermediate `64x112x112` tensor, but recomputes overlapping convolution
   points across adjacent pool windows. Use it as a starting point for tiled
   shared-memory/register reuse optimization.
+| v41_regpool_oc64 | register-strip pool, no conv tile | 0.0266 | 0 |
+| v42_implgemm_pc8 | 4-warp OC strip, reg-ish pool, LDS 596->57 | 0.0214 | 0 |
+| v43_8x8_reg64pool | 8-row tile + register best[64] | 0.0378 | 0 |
+| v44_cutlass_conv | CUTLASS 4.6 int8 implicit-GEMM | 0.0685 | n/a |
+| v44_cutlass_conv_pool | + 3x3s2 maxpool | 0.0877 | n/a |

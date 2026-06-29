@@ -11,6 +11,14 @@ and benchmark runners. `docs/` contains profiling notes. Generated directories
 such as `build/`, `results/`, and `models/` are outputs and should not be
 treated as source.
 
+Shared shapes, `CUDA_CHECK`, arg parsing, CPU reference, timing, and packed-MMA
+weight prep live in [src/resnet_stem_common.cuh](src/resnet_stem_common.cuh).
+Read [README.md](README.md) first: it is the authoritative log of every `v*`
+attempt, current best timings, and the gap-to-TensorRT plan. Profiling detail is
+in [docs/tensorrt_fused_core_profile.md](docs/tensorrt_fused_core_profile.md) and
+[docs/trt_kernel_gap_plan.md](docs/trt_kernel_gap_plan.md). The README version
+table is more current than the source-file count, so trust it over guessing.
+
 ## Build, Test, and Development Commands
 
 - `./scripts/build.sh`: configures a Release CMake build for CUDA architecture
@@ -30,9 +38,25 @@ Use C++17/CUDA17, two-space indentation, and the existing compact kernel style.
 Keep constants uppercase (`CONV_OH`, `POOL_OW`), helper functions snake_case
 (`parse_args`, `conv_point`), and kernel names descriptive with a `_kernel`
 suffix. New benchmark attempts should continue the versioned pattern:
-`src/bench_resnet_stem_v10.cu`, then add the matching executable in
-`CMakeLists.txt`. Preserve `CUDA_CHECK`-style error handling and explicit
-benchmark arguments such as `--iters`, `--warmup`, and `--csv`.
+`src/bench_resnet_stem_vN.cu`, reusing the harness in
+`resnet_stem_common.cuh` and keeping only that version's unique kernels/cases.
+Then append a matching executable block in `CMakeLists.txt`:
+
+```cmake
+add_executable(bench_resnet_stem_vN src/bench_resnet_stem_vN.cu)
+target_compile_options(bench_resnet_stem_vN PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
+(`max_abs_err` must be 0) and timings against the baseline. For TensorRT changes,
+run `./scripts/run_tensorrt_stem.sh` and update profiling notes only when results
+are reproducible on the target GPU. Record hardware, CUDA, TensorRT version, and
+iteration counts when adding performance claims; the comparison target is the
+fused `CaskConvActPool` layer (~`0.01 ms`), not whole-engine time. Note env
+constraints: GPU is RTX 3080 Ti (`sm_86`), `nvcc` is in `/usr/local/cuda-11.8`,
+and `ncu` hardware counters are blocked, so SASS/resource usage is the main
+profiling signal
+Preserve `CUDA_CHECK`-style error handling and explicit benchmark arguments such
+as `--iters`, `--warmup`, and `--csv`. Targets that need cuBLAS also need
+`target_link_libraries(... PRIVATE cublas)` (see `bench_resnet_stem_v4`).
 
 ## Testing Guidelines
 
