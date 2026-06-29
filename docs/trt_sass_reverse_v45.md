@@ -210,3 +210,12 @@ Multi-warp doesn't help: per-warp B-stage (15.4KB) dominates. TRT fits 9KB by
 NOT staging full B per N (reuse from regs + cp.async). v50 0.0255 stays best
 hand replica (240 IMMA, REG116). Closing to 0.0108 = shrink smem<10KB via
 cp.async/LDSM streaming — CUTLASS-scale, exhausted by hand.
+
+## 14. Direction: bespoke, no CUTLASS
+
+The TRT kernel `sm80_trt_conv_act_pool_v3...` is bespoke — no CUTLASS symbols in
+the cubin, v44 confirmed stock CUTLASS is 0.068 on this C=3 stem. Decision: TRT
+parity is pursued ONLY via hand-written CUDA + inline PTX (mma/cp.async). Do not
+revisit CUTLASS. Next levers within this constraint: shrink smem <10KB (skip
+full-B stage, stream K via cp.async), multi-warp for occupancy, register F2IP
+pool, wide LDG.128/64. Best so far v50: 240 IMMA, REG116, 0.0255 ms.

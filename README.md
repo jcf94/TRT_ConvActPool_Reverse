@@ -142,6 +142,10 @@ The remaining gap is architectural, not a simple parameter issue:
 | v50 | active | `v50_240imma_pool = 0.0255 ms`, err=2 | 240 IMMA + REG116(no spill) + register pool, LDS696->156; err2 boundary (112%12); STS/STG still high |
 | v51 | active | `v51_240imma = 0.044 ms`, err=2 | halo-stepped 240-IMMA tile, REG114; more CTAs regressed vs v50; STS/STG still high |Keep a version in `src/` when it is one of:
 | v52 | active | `v52 = 0.080 ms`, err=1 | 2-warp/CTA dup smem 43KB -> 1 CTA/SM, regressed; smem is the occupancy wall (negative) |
+| v53 | active | `v53 = 0.080 ms` | 32-thread blocks; smem 21KB still caps CTAs, single-warp regressed (negative) |
+| v54 | active | `v54 = 0.046 ms`, err=1 | smem 21KB->8.1KB + REG231->48 (drop K unroll); TRT-class resources reached, but single warp/CTA computes so it stays compute-bound. Next: multi-warp split of N tiles to use freed occupancy |
+| v55 | active | `v55 = 0.0277 ms`, err=1 | 4 warps/CTA split 12 N-tiles, REG64/8KB; matches v50 perf with TRT-class resources (smem 21->8KB). 240 IMMA total |
+| v56 | active | `v56 = 0.0263 ms`, err=1 | 6 warps; marginal over v55 -> warp count saturated. Remaining gap: byte-granular patch LDS + 64-way STG scatter (TRT=2). Next: wide LDG/cp.async B-stage + vectorized STG |
 - a current best or reproducible comparison target,
 - the first implementation of a new strategy,
 - a decisive negative result that changes the optimization direction,
