@@ -87,3 +87,13 @@ v36 plan: (1) vectorize input/weight loads to `LDG.128/64`; (2) pool in register
 via warp shuffle instead of int16 smem tile — drop one smem buffer + barrier,
 mimic F2IP max chain; (3) more work/thread to lift REG→~128 & IMMA/CTA; then
 widen N toward 120 with cp.async double-buffer (S2).
+
+## 7. v36 attempts (regressed; v35 stays best)
+
+- Stage 64-OC weights into shared via uint4 → 0.029 ms (weights are L2-cached &
+  not the bottleneck; added LDS for A made it worse).
+- Transpose acc tile [N][OC] for vectorized pool → 0.032 ms (strided MMA-epilogue
+  stores + bank conflicts dominate). Conclusion: bottleneck is not weight loads
+  or pool layout; it's tile size / occupancy. Real gain needs S2: 8×120 wide-N
+  tile + cp.async double-buffer + straight-line IMMA (matches 240 IMMA/CTA). v35
+  `0.0196 ms` remains best (1.8× TRT).
