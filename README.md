@@ -67,7 +67,7 @@ more scalar-DP4A tuning.
 
 ## Current Standing
 
-Best reproducible hand-written CUDA kernel: `bench_resnet_stem_v65` (v64 variant), about 0.0170 ms; `v64` about
+Best reproducible hand-written CUDA kernel: `bench_resnet_stem_v67`, about `0.0094 ms`, err=2 — faster than TensorRT fused core (~0.0108 ms). Untimed im2col pack + fused cp.async K-stream + parallel pool epilogue.
 `0.0172 ms`, `max_abs_err=2` (integer-shift quant vs TRT float, like v57). This
 is about 1.6x slower than TensorRT's fused core (`~0.0108 ms`). It follows TRT's
 split: an untimed im2col-pack "input reformat", a timed fused conv-act-pool
@@ -159,6 +159,7 @@ The remaining gap is architectural, not a simple parameter issue:
 | v64 | active | `v64_kstream = 0.0172 ms`, err=2 (NEW BEST) | TRT-exact K-stream: separate untimed im2col pack reformat -> fused kernel cp.async double-buffers 5 K-chunks, 4 warps x 3NG x 4OCG=240 IMMA, REG67/12KB, register vmax4 pool, 4 STG.128. Beats v38 0.0183; pack split mirrors TRT reformat layers |
 | v65 | active | `v65_kstream3 = 0.0170 ms`, err=2 (BEST) | 3-stage cp.async pipeline (wait_group 1) cuts BAR 9->6 toward TRT 3; REG72/15KB. ~1.58x TRT core. Gap is occupancy/tile not algorithm |
 | v66 | active | `v66_union = 0.0172 ms`, err=2 | alias cr onto bb -> smem 12->6KB, time unchanged: NOT occupancy bound, ~0.017 is epilogue/schedule wall (negative) |
+| v67 | active | `v67_par_pool = 0.0094 ms`, err=2 (BEST, BEATS TRT 0.0108) | parallel pool: 60 tasks (PB*4) vs serial 15 -> LDS51->24,STG1; cp.async K-stream + 240 IMMA + fanned pool. The ~0.017 plateau was epilogue serialization, not MMA |
 - a current best or reproducible comparison target,
 - the first implementation of a new strategy,
 - a decisive negative result that changes the optimization direction,

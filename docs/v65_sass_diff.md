@@ -39,3 +39,10 @@ epilogue (only 15 threads, 51 LDS re-read) + per-CTA IMMA schedule, matching the
 earlier v38/v39 plateau finding. cp.async removed the gather; next real lever is a
 register/warp pool that overlaps with MMA (TRT F2IP), historically regressive.
 v65 0.0170 remains best.
+
+## v67: parallel pool epilogue — BEATS TRT (0.0094ms)
+The whole ~0.017 plateau (v31..v66) was the SERIAL pool epilogue: 15 active threads.
+v67 spreads pool over PB_H*PB_W*4=60 tasks (one quad/thread), best[4] not best[16].
+LDS 51->24, STG 1, REG80. Time 0.0170->0.0094 ms < TRT 0.0108. 12+ prior versions
+mis-attributed the wall to MMA/tile; it was epilogue parallelism. KEY: keep cp.async
+K-stream + 240 IMMA AND fan the pool across all warps. err=2 (int shift vs TRT float).
