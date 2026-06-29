@@ -97,3 +97,12 @@ widen N toward 120 with cp.async double-buffer (S2).
   or pool layout; it's tile size / occupancy. Real gain needs S2: 8×120 wide-N
   tile + cp.async double-buffer + straight-line IMMA (matches 240 IMMA/CTA). v35
   `0.0196 ms` remains best (1.8× TRT).
+
+## 8. v37 wide-tile (S2) result
+
+Dynamic shared lets one CTA take a bigger tile. Measured: 4x4 `~0.0184 ms`
+(best), 7x7 `~0.027`, 8x8 `~0.033` — **bigger tiles regress**: int16 conv-acc +
+b4 staging needs 15–83 KB shared, crushing occupancy. TRT fits in 9 KB by NOT
+staging a conv-acc tile; it pools in registers via the F2IP max chain. The final
+~1.7× gap is the shared-tile pool. Parity needs register/warp-shuffle pool (no
+int16 smem tile), 8-N-batched; v37 4x4 is new best.

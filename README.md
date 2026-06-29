@@ -123,7 +123,9 @@ Latest optimization results:
 | v30 | `ptx_mma_oc32_raw_acc_pool = ~0.025 ms` | pool on int32 raw accumulators, ReLU/quant once |
 | v31 | `ptx_mma_oc32_raw_acc16_pool_4x4 = ~0.021–0.025 ms` | pool on int16 raw accumulators; prior best |
 | v32–v34 | group4/8/16 pool sweeps, ~0.023–0.046 ms | OC-group epilogue tuning, no gain over v31 |
-| v35 | `ptx_mma_oc64_raw_acc16_pool_4x4_w4_b256 = ~0.0196 ms` | **current best**; one CTA owns full 64-OC slab (TRT-style weight reuse) + int16 raw-acc pool; ~1.8x TRT core |
+| v35 | `ptx_mma_oc64_raw_acc16_pool_4x4_w4_b256 = ~0.0196 ms` | one CTA owns full 64-OC slab (TRT-style weight reuse) + int16 raw-acc pool |
+| v36 | regressed ~0.029–0.032 ms | weights-in-shared & transposed acc both lose; bottleneck is occupancy, not loads |
+| v37 | `v37_oc64_wide_pool_4x4_b256 ≈ 0.019 ms` | dynamic smem; tied with v35, wide 7/8 tiles regress — **occupancy wall**: shared int16 conv-acc tile blocks parity; TRT pools in registers (F2IP), 9KB smem; gap ~1.8x |
 
 The v4 result shows that tensor-core INT8 convolution is necessary to approach
 TensorRT. It also shows why plain GEMM is not enough: materializing the full
