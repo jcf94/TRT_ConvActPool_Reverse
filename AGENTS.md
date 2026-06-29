@@ -40,6 +40,12 @@ Keep constants uppercase (`CONV_OH`, `POOL_OW`), helper functions snake_case
 suffix. New benchmark attempts should continue the versioned pattern:
 `src/bench_resnet_stem_vN.cu`, reusing the harness in
 `resnet_stem_common.cuh` and keeping only that version's unique kernels/cases.
+
+Ablation or isolation experiments on an existing version use the
+`src/bench_resnet_stem_vN_ablation.cu` suffix, reuse that version's conv core via
+a shared templated `__device__` helper (see `v72_conv<RELU>` in
+`bench_resnet_stem_v72_ablation.cu`), and print one timed line per variant. Each
+variant must still validate `max_abs_err=0` against a matching CPU reference.
 Then append a matching executable block in `CMakeLists.txt`:
 
 ```cmake

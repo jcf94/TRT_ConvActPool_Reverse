@@ -1,7 +1,20 @@
-# CUDA Operator Benchmark
+# TensorRT ConvActPool Reverse
 
-This repository is a reproducible CUDA benchmark harness for iterating on a
-high-performance INT8 ResNet stem operator and comparing it with TensorRT.
+> Refer to https://zhuanlan.zhihu.com/p/2053985213001234199
+
+This repository reverse-engineers and reproduces TensorRT's INT8
+`ConvActPool` fusion for the ResNet stem. The CUDA benchmark harness is used to
+iterate on hand-written kernels, compare them with TensorRT's fused
+`CaskConvActPool` layer, and document the path to bit-exact TRT-parity.
+
+**Headline result (RTX 3080 Ti, sm_86, CUDA 11.8):** the best correct hand-written
+kernel `bench_resnet_stem_v72` reaches **~0.0106–0.0108 ms with `max_abs_err=0`**,
+matching/under TensorRT's fused `CaskConvActPool` core (**~0.0108 ms**) with
+bit-exact output. Epilogue ablation (`bench_resnet_stem_v72_ablation`) shows the
+fused MaxPool tail costs **~0.0021 ms (~20%)**, ReLU is essentially free, and the
+conv MMA core alone runs at **~0.0087 ms** — so v72 is at TRT parity and the
+remaining tail is the pool reduction, not the tensor-core schedule.
+
 
 Current operator:
 `Conv 7x7 stride 2 pad 3 -> ReLU -> MaxPool 3x3 stride 2 pad 1`.
@@ -15,7 +28,7 @@ Shapes:
 ## Remote Build
 
 ```bash
-cd /root/cuda_op_bench
+cd /root/TRT_ConvActPool_Reverse
 ./scripts/build.sh
 ./build/bench_resnet_stem --iters 1000 --warmup 100
 ./scripts/run_resnet_stem.sh
@@ -199,6 +212,7 @@ coverage is proven (err=0).
 | v70 | active | `v70_halo13x9 = 0.0110 ms`, err=0 | minimal 13x9 halo tile, 5 warps; less overlap recompute vs v69 |
 | v71 | active | `v71_halo14x9_4w = 0.0109 ms`, err=0 | 14x9 tile + 4 warps (matches v67/68 warp count) -> matches TRT 0.0108 with correct output |
 | v72 | active | `v72_halo14x9_3stage = 0.0106 ms`, **err=0** (BEST, ~TRT) | v71 + 3-stage cp.async (BAR cut), REG106/SHARED20KB; first CORRECT kernel at/under TRT 0.0108 ms. smem high; v71 keeps 9KB if occupancy matters |
+| v72_ablation | active | `full=0.0108 / nopool=0.0087 / conv_only=0.0087 ms`, err=0 | epilogue ablation on v72 core (`v72_conv<RELU>`): MaxPool ≈0.0021ms (~20%), ReLU free, conv MMA alone ≈0.0087ms. nopool/conv_only emit full 112x112 conv NHWC |
 - a current best or reproducible comparison target,
 - the first implementation of a new strategy,
 - a decisive negative result that changes the optimization direction,
@@ -333,6 +347,28 @@ timed fused conv+ReLU+pool kernel. Shapes: input `3x224x224 int8`, conv `7x7 s2`
 when occupancy matters. The pack/reformat layers carry the byte-granular I/O TRT
 also offloads, so the fused core stays vectorized.
 
+### Epilogue ablation (where the fused-tail time goes)
+
+`bench_resnet_stem_v72_ablation` reuses the identical v72 conv MMA core
+(templated `v72_conv<RELU>`) and only swaps the epilogue, to isolate the cost of
+the MaxPool and ReLU stages. nopool/conv_only emit the full `112x112` conv tensor
+(NHWC), so the numbers include the larger store volume that pooling otherwise
+collapses 4:1. All three are bit-exact (`max_abs_err=0`) vs dedicated conv-/pool-
+resolution CPU references. RTX 3080 Ti, sm_86, CUDA 11.8, `--iters 2000 --warmup 200`:
+
+| variant | epilogue | time | Δ vs full |
+| --- | --- | --- | --- |
+| `v72_full` | Conv + ReLU + MaxPool | `0.0108 ms` | — |
+| `v72_nopool` | Conv + ReLU | `0.0087 ms` | −0.0021 (~20%) |
+| `v72_conv_only` | Conv (no ReLU, no pool) | `0.0087 ms` | −0.0021 |
+
+- **MaxPool ≈ 0.0021 ms (~20% of the kernel).** This holds *despite* nopool
+  writing ~4x more output, so the cost is the `vmax4` 3x3 reduction + `__syncthreads`,
+  not stores. The remaining gap-to-TRT lives in the fused pool tail, not the MMA.
+- **ReLU is free** (nopool == conv_only): it folds into the int8 clamp in the
+  epilogue, adding no measurable instructions.
+- **Conv MMA core alone ≈ 0.0087 ms**, already under the TRT fused core (~0.0108 ms).
+
 
 - CUDA: `/usr/local/cuda-11.8`.
 - TensorRT: `tensorrt-cu11==10.10.0.31` via pip on the remote machine.
@@ -340,3 +376,38 @@ also offloads, so the fused core stays vectorized.
   followed by `cuobjdump -sass -arch sm_86` on the extracted fatbin.
 - The comparison target is TensorRT's fused `CaskConvActPool` layer
   (`~0.01 ms`), not whole-engine time.
+
+## Repository Structure
+
+```text
+TRT_ConvActPool_Reverse/
+├── README.md                     # Authoritative log: every v* attempt, best timings, gap-to-TRT plan
+├── AGENTS.md                     # Repo guidelines (structure, build/test, style, ablation conventions)
+├── CMakeLists.txt                # Build config (CUDA arch 86); one add_resnet_stem_bench per active target
+├── src/                          # Active benchmark sources (29 .cu) + shared harness
+│   ├── resnet_stem_common.cuh    # Shapes, CUDA_CHECK, arg parsing, CPU reference, timing, packed-MMA weights
+│   ├── bench_resnet_stem.cu      # Baseline benchmark
+│   ├── bench_resnet_stem_vN.cu   # Versioned optimization attempts (best correct: v72, ~0.0108 ms, err=0)
+│   ├── bench_resnet_stem_v72_ablation.cu  # Epilogue ablation: conv / conv+relu / conv+relu+pool
+│   └── legacy/                   # Non-milestone exploratory sources, not in the default build
+├── scripts/                      # Build + benchmark + TensorRT/SASS tooling
+│   ├── build.sh                  # Release CMake build for sm_86
+│   ├── run_resnet_stem.sh        # Runs baseline, writes results/resnet_stem.csv
+│   ├── check_tensorrt.py         # Reports TensorRT / trtexec / libnvinfer availability
+│   ├── make_resnet_stem_onnx.py  # Generates ONNX models for TRT reproduction
+│   ├── run_tensorrt_stem.sh      # ONNX -> TRT profiling -> results/
+│   ├── run_tensorrt_python.py    # Python TRT fallback when trtexec is unavailable
+│   ├── extract_engine_fatbin.py  # Dumps the embedded fatbin from a serialized engine
+│   └── sass_summary.py           # Summarizes IMMA/DP4A/LDG instruction mix from SASS
+├── docs/                         # Profiling notes and SASS reverse-engineering records
+│   ├── tensorrt_fused_core_profile.md
+│   ├── trt_kernel_gap_plan.md
+│   ├── trt_kernel_implementation_schemes.md
+│   ├── trt_sass_reverse_v45.md
+│   └── v65_sass_diff.md
+├── results/                      # Reference TRT SASS / resource-usage dumps (generated artifacts)
+├── 3rdparty/cutlass              # CUTLASS submodule (used only by the v44 comparison)
+└── .github/                      # add-bench-version prompt + trt-sass-profile skill
+```
+
+Generated directories `build/`, `results/`, and `models/` are outputs, not source.
