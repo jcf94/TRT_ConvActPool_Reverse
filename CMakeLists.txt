@@ -48,3 +48,6 @@ target_compile_options(bench_resnet_stem_v44 PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;--expt-relaxed-constexpr>
   $<$<COMPILE_LANGUAGE:CXX>:-O3>
 )
+add_resnet_stem_bench(bench_resnet_stem_v46 src/bench_resnet_stem_v46.cu)
+add_resnet_stem_bench(bench_resnet_stem_v47 src/bench_resnet_stem_v47.cu)
+add_resnet_stem_bench(bench_resnet_stem_v48 src/bench_resnet_stem_v48.cu)

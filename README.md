@@ -135,7 +135,9 @@ The remaining gap is architectural, not a simple parameter issue:
 | v43 | active | `v43_8x8_reg64pool = 0.0378 ms` | 8-row tile plus large register pool spills/regresses |
 | v44 | active | `v44_cutlass_conv = 0.0685 ms`; `v44_cutlass_conv_pool = 0.0877 ms` | stock CUTLASS comparison, not competitive on this shape |
 | v45 | active | `v45_trt_replica_8x7 = 0.0414 ms`, err=0 | direct SASS reverse: 8-row tile, IMMA mainloop, packed-byte register pool; correct but smem-bound, ~2.3x v38 (see `docs/trt_sass_reverse_v45.md`) |
-
+| v46 | active | `v46_t8 = 0.0418 ms`, err=0 | transposed [N][OC] pool + vmax4; strided MMA store regresses (negative) |
+| v47 | active | `v47_3x3 = 0.0218 ms`, err=0 | occupancy sweep, confirms ~0.0216 floor (negative) |
+| v48 | active | `v48_240imma_64x96 = 0.034 ms`, err=0 | first instruction-count match: 240 IMMA via 64OC x 96 conv-pts/CTA, K160; REG255 spills, no epilogue yet |
 ## Source Retention Policy
 
 Keep a version in `src/` when it is one of:

@@ -152,11 +152,38 @@ v45_trt_replica_8x10_b256  0.051955 ms  max_abs_err=0
 v45_trt_replica_8x12_b256  0.059179 ms  max_abs_err=0
 ```
 
-REG 128, IMMA 20, LDS 586, STG 64, BAR 2. Correct but ~2.3× slower than v38
-(0.0183). The wider 8-row tile makes the smem stage 57–95 KB, which crushes
-occupancy, and the register packed pool still re-reads conv_acc from smem
-(586 LDS) so the mainloop stays looped (20 IMMA, not 240 straight-line). This
-reproduces the plateau verdict: copying tile shape alone regresses; TRT 0.0108
-needs 240 unrolled IMMA + cp.async multistage + true F2IP register pool (no smem
-re-read) at once — a CUTLASS-scale rewrite, not a transcription.
+## 9. v46/v47 — full-rewrite attempts at TRT parity (negative)
 
+Full rewrites allowed; goal was TRT 0.0108. Measured this box (v38 4x4=0.0216):
+- **v46** transposed conv-relu `[N][OC]` + `vmax4` packed pool + vectorized
+  store: 0.0418–0.0499. Strided int8 MMA-epilogue store dominates (same wall as
+  v39). LDS/STG drop but store scatter costs more.
+- **v45** wide 8-row tile: 0.0414–0.0592, smem 57–95 KB crushes occupancy.
+- **v47** occupancy sweep on v38 shape: best 3x3 0.0218; b128 invalid (8 warps
+  ⇒ 256 threads). Floor stays ~0.0216.
+
+**Verdict:** the packed-MMA+shared family cannot reach 0.0108 by hand. The two
+TRT requirements — 240 straight-line IMMA (8×120 wide tile) AND register F2IP
+pool (no smem re-read) — conflict under sm_86 reg/smem limits; either occupancy
+collapses or stores scatter. Stock CUTLASS multistage (v44) is 0.068 on this
+C=3 stem. TRT 0.0108 is a bespoke RGB-stem kernel; not reproducible by hand here.
+Best reproducible: v38 ≈ 0.0183–0.0216. v45 kept as faithful replica reference.
+
+
+
+## 10. v48 — 240-IMMA count parity (why 240)
+
+240 IMMA.16816 = (M/16)·(N/8)·(K/16) = 4·12·10: per CTA 64 OC × 96 conv-points,
+K 147→160. v48 unrolls 4 OC-grp × 12 N (n8) × 5 (k32 PTX) = 120 PTX mma → 240
+SASS. Measured: IMMA 240 (=TRT), err=0, 0.034 ms.
+
+| | TRT | v48 |
+|---|---:|---:|
+| IMMA | 240 | 240 |
+| REG | 128 | 255 (spills) | conv-only, one warp holds 64×96 acc |
+| LDG | 56 | 84 | byte loads, not wide |
+| LDS/STS | 50/20 | 120/1 | |
+| STG | 2 | 192 | no pool epilogue yet |
+
+Next: bring REG→128 (cooperative warps), add F2IP/I2FP/FFMA pool epilogue and
+2× STG, wide LDG.128/64 → full behavior parity.
