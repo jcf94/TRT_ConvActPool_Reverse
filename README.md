@@ -1,7 +1,9 @@
-# CUDA Operator Benchmark
+# TensorRT ConvActPool Reverse
 
-This repository is a reproducible CUDA benchmark harness for iterating on a
-high-performance INT8 ResNet stem operator and comparing it with TensorRT.
+This repository reverse-engineers and reproduces TensorRT's INT8
+`ConvActPool` fusion for the ResNet stem. The CUDA benchmark harness is used to
+iterate on hand-written kernels, compare them with TensorRT's fused
+`CaskConvActPool` layer, and document the path to bit-exact TRT-parity.
 
 Current operator:
 `Conv 7x7 stride 2 pad 3 -> ReLU -> MaxPool 3x3 stride 2 pad 1`.
@@ -15,7 +17,7 @@ Shapes:
 ## Remote Build
 
 ```bash
-cd /root/cuda_op_bench
+cd /root/TRT_ConvActPool_Reverse
 ./scripts/build.sh
 ./build/bench_resnet_stem --iters 1000 --warmup 100
 ./scripts/run_resnet_stem.sh
