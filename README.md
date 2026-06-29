@@ -126,6 +126,8 @@ Latest optimization results:
 | v35 | `ptx_mma_oc64_raw_acc16_pool_4x4_w4_b256 = ~0.0196 ms` | one CTA owns full 64-OC slab (TRT-style weight reuse) + int16 raw-acc pool |
 | v36 | regressed ~0.029–0.032 ms | weights-in-shared & transposed acc both lose; bottleneck is occupancy, not loads |
 | v37 | `v37_oc64_wide_pool_4x4_b256 ≈ 0.019 ms` | dynamic smem; tied with v35, wide 7/8 tiles regress — **occupancy wall**: shared int16 conv-acc tile blocks parity; TRT pools in registers (F2IP), 9KB smem; gap ~1.8x |
+| v38 | `v38_oc64_i8pool_4x4_b256 ≈ 0.0183 ms` | **best (plateau)**; int8 pool tile, dynamic smem; ties v35/v37 — confirms not shared-size bound |
+| v39 | `≈ 0.021 ms` | [N][OC] tile cuts pool LDS 596→56 (=TRT) but slower: strided MMA stores dominate → pool LDS not the limiter; ~0.018 is a true plateau (1.7x TRT) |
 
 The v4 result shows that tensor-core INT8 convolution is necessary to approach
 TensorRT. It also shows why plain GEMM is not enough: materializing the full

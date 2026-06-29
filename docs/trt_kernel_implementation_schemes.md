@@ -106,3 +106,31 @@ b4 staging needs 15–83 KB shared, crushing occupancy. TRT fits in 9 KB by NOT
 staging a conv-acc tile; it pools in registers via the F2IP max chain. The final
 ~1.7× gap is the shared-tile pool. Parity needs register/warp-shuffle pool (no
 int16 smem tile), 8-N-batched; v37 4x4 is new best.
+
+## 9. v38 SASS pinpoint — pool re-read is the wall
+
+v38 (int8 tile, dynamic smem) ties v37 at ~0.018 ms; SASS of the 4x4 kernel:
+
+| metric | TRT core | v38 4x4 | gap |
+|---|---:|---:|---|
+| IMMA | 240 | 40 | small tile |
+| LDS | 50 | **596** | each pool pixel re-reads 9×64 from smem |
+| STG | 2 | 64 | byte stores, not vectorized |
+| LDG.128/64 | 12/26 | 0/0 | byte loads |
+| BAR | 3 | 2 | ok |
+
+Reducing shared (int16→int8) did NOT speed up → not shared-size bound; the
+plateau (~0.018, all of v31/v35/v37/v38) is the **596 pool LDS**. TRT avoids it
+by pooling on registers via the F2IP max chain (50 LDS). Parity requires
+eliminating the smem conv tile: lane-remap so a warp's 8 MMA N-points form pool
+windows, chain max in registers, vectorize stores → drop LDS 596→~50, STG 64→2.
+
+## 10. v39 — pool LDS is NOT the limiter (key result)
+
+Transposed tile [N][OC] cut pool **LDS 596→56 (matches TRT's 50)** but ran
+*slower* (~0.021 vs 0.018): strided int8 MMA-epilogue stores cost more than the
+LDS saved. Decisive: ~0.018 ms (all of v31/v35/v37/v38) is a true plateau —
+limited by per-CTA MMA schedule (40 IMMA + overhead), not by pool reads. Closing
+to TRT 0.0108 needs the full implicit-GEMM rewrite: 8×120 tile, 240 straight-line
+IMMA, 128 reg, cp.async, F2IP register pool — a CUTLASS-scale kernel. Plateau
+best ~0.018 ms ≈ 1.7× TRT; v36/v39 are instructive regressions.
