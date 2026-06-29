@@ -295,3 +295,4 @@ Each optimization attempt lives in a separate source file:
   intermediate `64x112x112` tensor, but recomputes overlapping convolution
   points across adjacent pool windows. Use it as a starting point for tiled
   shared-memory/register reuse optimization.
+| v41_regpool_oc64 | register-strip pool, no conv tile | 0.0266 | 0 |

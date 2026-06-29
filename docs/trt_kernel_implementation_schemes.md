@@ -142,3 +142,12 @@ Hoisting A reuse to 4 N-pairs/warp pushed acc to 64 regs and idled 5/8 warps at
 v36/39/40 worse). Verdict: this packed-MMA+shared family is exhausted at ~0.018;
 TRT parity needs a ground-up implicit-GEMM kernel (8×120, 240 straight IMMA, 128
 reg, cp.async pipeline, register F2IP pool). Best stable: **v38 ≈ 0.0183 ms**.
+
+## 12. v41 — register-strip pool, no conv tile (correct, slower)
+
+Per-pool-row block (8 px), only B staged (~9 KB like TRT), pool reads a small
+int8 strip in shared — removes the big conv-acc tile. err=0 but 0.0266 ms: 3 conv
+rows recomputed per pool row → ~75% redundant conv. Lesson: dropping the tile
+alone doesn't help; TRT's win is reusing 17 conv rows across an 8-pool-row tile so
+MMA is amortized. Beating 0.018 needs wide tile + register pool + occupancy at
+once — the full CUTLASS implicit-GEMM. v38 ≈ 0.0183 ms stays best.
