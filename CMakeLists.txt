@@ -262,3 +262,10 @@ target_compile_options(bench_resnet_stem_v43 PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;-lineinfo>
   $<$<COMPILE_LANGUAGE:CXX>:-O3>
 )
+
+add_executable(bench_resnet_stem_v44 src/bench_resnet_stem_v44.cu)
+target_include_directories(bench_resnet_stem_v44 PRIVATE
+  ${CMAKE_SOURCE_DIR}/3rdparty/cutlass/include
+  ${CMAKE_SOURCE_DIR}/3rdparty/cutlass/tools/util/include)
+target_compile_options(bench_resnet_stem_v44 PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math;-O3;--expt-relaxed-constexpr>)

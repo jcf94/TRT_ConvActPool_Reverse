@@ -298,3 +298,5 @@ Each optimization attempt lives in a separate source file:
 | v41_regpool_oc64 | register-strip pool, no conv tile | 0.0266 | 0 |
 | v42_implgemm_pc8 | 4-warp OC strip, reg-ish pool, LDS 596->57 | 0.0214 | 0 |
 | v43_8x8_reg64pool | 8-row tile + register best[64] | 0.0378 | 0 |
+| v44_cutlass_conv | CUTLASS 4.6 int8 implicit-GEMM | 0.0685 | n/a |
+| v44_cutlass_conv_pool | + 3x3s2 maxpool | 0.0877 | n/a |

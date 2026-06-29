@@ -182,3 +182,15 @@ submodule; no `implicit_gemm_convolution.h` anywhere, no network to clone. So
 0.0108 ms parity (CUTLASS-tuned multistage IMMA) is unreachable by hand here.
 Final standing: 9 hand schemes v35–v43, all err=0; **v38 ≈ 0.0183 ms** best,
 1.7× TRT, gap is occupancy/tile not correctness. Recommend finalizing v38.
+
+## 16. v44 — real CUTLASS 4.6 int8 implicit-GEMM conv (+ pool) — measured
+
+Linked the actual CUTLASS Ampere int8 conv (`ImplicitGemmConvolution`, 128x128x64
+/ 64x64x64 / 16x8x32, 3-stage, ReLU epilogue) + separate 3x3s2 maxpool. C padded
+3->16 for IMMA alignment. RTX 3080 Ti: conv 0.0685, conv+pool 0.0877 ms. SASS:
+REG 242, 64 IMMA/CTA, 98 CTAs. Generic CUTLASS is 6x TRT and ~3.7x slower than
+our hand v38 (0.0183). Reasons: (a) stem C=3 padded to 16 = 5x wasted MACs;
+(b) N=OC=64 only half-fills the 128 tile; (c) pool not fused. **Conclusion: TRT's
+0.0108 is a bespoke RGB stem (C=3 native, 8x120, pool fused), not stock CUTLASS.
+Best reproducible here stays v38 0.0183; even NVIDIA's generic conv loses to it on
+this pathological shape.**
