@@ -21,7 +21,10 @@ fused kernel `src/blackwell/bench_stem_sm120_v2.cu` reaches **0.00499 ms with
 (**~0.0092 ms**, kernel `sm80_trt_conv_act_pool_v3_tile_rows_4_tile_cols_116` —
 TRT reuses the Ampere cask kernel, it has no native sm_120 variant). TensorRT 11
 dropped implicit INT8 quantization, so the fused core only appears with a
-fully-quantized Q/DQ graph (`src/blackwell/make_stem_int8_qdq_onnx.py`). Full
+fully-quantized Q/DQ graph (`src/blackwell/make_stem_int8_qdq_onnx.py`). A control
+experiment (`make_stem_int8_unfusable_onnx.py`) shows TRT's *standalone* INT8 conv
+costs ~0.0087 ms — about the same as its fused conv+relu+pool — so the hand kernel
+does the whole fused op faster than TRT does the convolution alone. Full
 methodology, profile, and the v1→v3 iteration ladder are in
 [docs/blackwell_trt_profile.md](docs/blackwell_trt_profile.md).
 

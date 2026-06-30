@@ -113,6 +113,44 @@ finding that TRT's serial pool epilogue is the bottleneck and a fanned-pool +
 cp.async IMMA core beats it. TRT did not specialize the kernel for Blackwell (it
 reuses the `sm80_` cask kernel), which widens the gap relative to sm_86.
 
+## Validation: standalone / un-fused INT8 conv
+
+To confirm where the time goes, `src/blackwell/make_stem_int8_unfusable_onnx.py`
+denies TRT the Conv->ReLU->MaxPool fusion two ways and we re-profile (20k iters):
+
+| Graph | Conv kernel chosen | conv ms | pool ms | notes |
+| --- | --- | --- | --- | --- |
+| fused (reference) | `sm80_trt_conv_act_pool_v3_4x116` (cask) | — | — | whole conv+relu+pool = **~0.0092** |
+| **conv only** (no pool) | `sm80_xmma_fprop_first_layer_i8i8_i8i32 ... tensor16x8x16_r7s7_u2v2` | **0.00869** | — | genuine INT8 conv (REG:240, SHARED:1024) |
+| **no-fuse** (conv + separate pool) | same INT8 `first_layer` conv | 0.00908 | 0.00669 (`sm50_xmma_pooling_tiled_INT8NCxHW4`) | + several Move/Tran/Cast reformat kernels |
+
+Whole-engine means: fused 0.046 ms, conv-only 0.058 ms, no-fuse **0.094 ms**.
+
+Takeaways:
+
+1. **The pool is nearly free inside the fused kernel.** TRT's standalone INT8
+   conv (~0.0087 ms) costs essentially the same as the fused Conv+ReLU+MaxPool
+   (~0.0092 ms): folding ReLU+MaxPool into the conv epilogue adds only ~0.0005 ms.
+2. **Un-fusing is expensive.** Forced apart, TRT must add a separate INT8 pool
+   kernel (~0.0067 ms) plus NCHW<->NHWC reformat/transpose kernels, nearly
+   doubling end-to-end time (0.094 vs 0.046 ms).
+3. **The hand kernel does the whole op faster than TRT does the conv alone.**
+   `sm120_v2` (0.00499 ms, conv+relu+pool fused, err=0) beats TRT's *standalone
+   INT8 conv* (0.00869 ms) by ~1.74x. The advantage is the tighter fused schedule
+   (cp.async IMMA core + fanned `vmax4` pool epilogue), not skipped work — TRT's
+   own fused cask core is the right comparison and the hand kernel still leads it
+   by ~1.8x.
+
+Reproduce:
+
+```bash
+python src/blackwell/make_stem_int8_unfusable_onnx.py
+python src/blackwell/run_trt_sm120.py --onnx models/resnet_stem_int8_conv_only.onnx \
+  --save-engine results/stem_conv_only_sm120.plan --warmup 200 --iters 20000
+python src/blackwell/run_trt_sm120.py --onnx models/resnet_stem_int8_no_fuse.onnx \
+  --save-engine results/stem_no_fuse_sm120.plan --warmup 200 --iters 20000
+```
+
 ## Reproduce
 
 ```bash
