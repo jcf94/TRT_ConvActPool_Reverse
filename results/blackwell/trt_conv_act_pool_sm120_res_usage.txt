@@ -1,0 +1,14 @@
+
+Fatbin elf code:
+================
+arch = sm_120
+code version = [1,8]
+host = linux
+compile_size = 64bit
+compressed
+
+Resource usage:
+ Common:
+  GLOBAL:0
+ Function sm80_trt_conv_act_pool_v3_tile_rows_4_tile_cols_116_execute_kernel_trt:
+  REG:122 STACK:0 SHARED:8064 LOCAL:0 CONSTANT[0]:968 TEXTURE:0 SURFACE:0 SAMPLER:0

@@ -15,6 +15,19 @@ fused MaxPool tail costs **~0.0021 ms (~20%)**, ReLU is essentially free, and th
 conv MMA core alone runs at **~0.0087 ms** — so v72 is at TRT parity and the
 remaining tail is the pool reduction, not the tensor-core schedule.
 
+**Blackwell result (RTX 5090, sm_120, CUDA 12.8, TensorRT 11.1):** the hand-written
+fused kernel `src/blackwell/bench_stem_sm120_v2.cu` reaches **0.00499 ms with
+`max_abs_err=0`**, ~**1.8x faster** than TensorRT's fused `ConvActPool` core
+(**~0.0092 ms**, kernel `sm80_trt_conv_act_pool_v3_tile_rows_4_tile_cols_116` —
+TRT reuses the Ampere cask kernel, it has no native sm_120 variant). TensorRT 11
+dropped implicit INT8 quantization, so the fused core only appears with a
+fully-quantized Q/DQ graph (`src/blackwell/make_stem_int8_qdq_onnx.py`). A control
+experiment (`make_stem_int8_unfusable_onnx.py`) shows TRT's *standalone* INT8 conv
+costs ~0.0087 ms — about the same as its fused conv+relu+pool — so the hand kernel
+does the whole fused op faster than TRT does the convolution alone. Full
+methodology, profile, and the v1→v3 iteration ladder are in
+[docs/blackwell_trt_profile.md](docs/blackwell_trt_profile.md).
+
 
 Current operator:
 `Conv 7x7 stride 2 pad 3 -> ReLU -> MaxPool 3x3 stride 2 pad 1`.
@@ -389,6 +402,11 @@ TRT_ConvActPool_Reverse/
 │   ├── bench_resnet_stem.cu      # Baseline benchmark
 │   ├── bench_resnet_stem_vN.cu   # Versioned optimization attempts (best correct: v72, ~0.0108 ms, err=0)
 │   ├── bench_resnet_stem_v72_ablation.cu  # Epilogue ablation: conv / conv+relu / conv+relu+pool
+│   ├── blackwell/                # RTX 5090 / sm_120 reverse-engineering (CUDA 12.8, TRT 11)
+│   │   ├── make_stem_int8_qdq_onnx.py  # Fully-quantized INT8 QDQ ONNX (TRT 11 strongly typed)
+│   │   ├── run_trt_sm120.py      # TRT-11 build/profile/save-engine runner
+│   │   ├── build_sm120.sh        # Standalone nvcc sm_120 build+run helper
+│   │   └── bench_stem_sm120_vN.cu # Hand kernels (best: v2, 0.00499 ms, err=0)
 │   └── legacy/                   # Non-milestone exploratory sources, not in the default build
 ├── scripts/                      # Build + benchmark + TensorRT/SASS tooling
 │   ├── build.sh                  # Release CMake build for sm_86
@@ -401,6 +419,7 @@ TRT_ConvActPool_Reverse/
 │   └── sass_summary.py           # Summarizes IMMA/DP4A/LDG instruction mix from SASS
 ├── docs/                         # Profiling notes and SASS reverse-engineering records
 │   ├── tensorrt_fused_core_profile.md
+│   ├── blackwell_trt_profile.md   # RTX 5090 / sm_120 TRT 11 profile + hand-kernel reproduction
 │   ├── trt_kernel_gap_plan.md
 │   ├── trt_kernel_implementation_schemes.md
 │   ├── trt_sass_reverse_v45.md
